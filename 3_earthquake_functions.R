@@ -75,7 +75,7 @@ earthquakes <- earthquakes |>
     datetime_pst <= cutoff2
   )
 
-p1 <- # Earthquakes
+p1 <- p1 +
   geom_sf(
     data = earthquakes,
     aes(color = mag),
