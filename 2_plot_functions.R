@@ -386,7 +386,8 @@ population_plot <- function(
   
   
   if (!is.null(disaster_type)) {
-    source("R/fire_functions.R")
+    
+    source(paste0("../../3_", disaster_type, "_functions.R"))
   }
   
   # ------------------------------------------------------------
