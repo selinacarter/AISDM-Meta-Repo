@@ -1,0 +1,74 @@
+---
+title: "Exploratory Data Analysis (Disaster-Agnostic)"
+format: pdf
+---
+
+## Instructions
+
+Make sure you set `tzone` in the code chunk below to the relevant timezone. Then, you can run this file to get rough population and displacement plots for the first and last timepoints.
+
+## Data Cleaning + Loading
+```{r}
+re_run_cleaning <- T
+tzone <- #### ADD TIMEZONE HERE
+source("1_data_cleaning.R")
+source("2_plot_functions.R")
+```
+
+
+## First Timestamp
+
+### Population Map
+
+```{r}
+population_plot_n_crisis(plot_ds = w[["first_ds"]],
+                             plot_hour = w[["first_hour"]],
+                             lon_limits = range(fb_data_bing$longitude), 
+                             lat_limits = range(fb_data_bing$latitude),
+                             zoom = 6,
+                             tzone = tzone
+                             )
+
+```
+
+### Displacement Map
+
+```{r}
+population_plot_n_difference(plot_ds = w[["first_ds"]],
+                             plot_hour = w[["first_hour"]],
+                             lon_limits = range(fb_data_bing$longitude), 
+                             lat_limits = range(fb_data_bing$latitude),
+                             zoom = 6,
+                             tzone = tzone
+                             )
+
+```
+
+## Last Timestamp
+
+### Population Map
+
+```{r}
+population_plot_n_crisis(plot_ds = w[["latest_ds"]],
+                             plot_hour = w[["latest_hour"]],
+                             lon_limits = range(fb_data_bing$longitude), 
+                             lat_limits = range(fb_data_bing$latitude),
+                             zoom = 6,
+                             tzone = tzone
+                             )
+
+```
+
+### Displacement
+
+```{r}
+population_plot_n_difference(plot_ds = w[["latest_ds"]],
+                             plot_hour = w[["latest_hour"]],
+                             lon_limits = range(fb_data_bing$longitude), 
+                             lat_limits = range(fb_data_bing$latitude),
+                             zoom = 6,
+                             tzone = tzone
+)
+
+```
+
