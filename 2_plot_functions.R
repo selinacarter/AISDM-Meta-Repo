@@ -16,6 +16,7 @@ shared_limits <- function(col, symmetric = FALSE,
 population_plot <- function(
     plot_ds,
     plot_hour,
+    tzone,
     metric = c("difference", "crisis", "zscore"),
     title = TRUE,
     plot_title = NULL,
@@ -589,7 +590,8 @@ population_plot <- function(
         ggplot2::ggtitle(
           format_time(
             plot_ds,
-            plot_hour
+            plot_hour,
+            tzone = tzone
           )
         )
       
