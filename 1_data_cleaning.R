@@ -13,7 +13,7 @@ library(rosm)
 
 
 ######------- Data Cleaning Functions --------#######
-here::i_am("data_cleaning.R")
+here::i_am("1_data_cleaning.R")
 
 # Convert possible "\N" values to proper numeric NA values.
 # NOTE: for the CSV load path this is now handled at read time via the `na=`
@@ -301,7 +301,7 @@ compute_windows <- function(fb_data_bing, tzone) {
 
 fb_data_bing <- load_population()
 tiles_3857   <- build_tiles(fb_data_bing)
-w <- compute_windows(fb_data_bing)
+w <- compute_windows(fb_data_bing, tzone)
 attach(w)
 mp_data_bing <- load_movement()
 moved <- build_moved(mp_data_bing)
