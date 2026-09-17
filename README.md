@@ -2,7 +2,7 @@
 
 ## Repo Structure
 
-* [EDA Code](https://github.com/selinacarter/AISDM-Meta-Repo/tree/main/EDA_Code)
+* [EDA Code](https://github.com/selinacarter/AISDM-Meta-Repo/tree/main/EDA_Code) - (R) A set of disaster-agnostic files that can be used for preliminary exploratory data analysis
 * [Interactive Version](https://github.com/selinacarter/AISDM-Meta-Repo/tree/main/Interactive_Version) - (Python )An interactive streamlit version of situation reports for disasters, including:
   * Winter Storm Fern - 02/2026
   * California Wildfires - 05/2026
