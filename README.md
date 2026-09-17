@@ -1,10 +1,3 @@
----
-
-editor_options: 
-  markdown: 
-    wrap: 72
----
-
 # CMU AI-SDM + Meta Repository
 
 ## Repo Structure
