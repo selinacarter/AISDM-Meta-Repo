@@ -6,7 +6,7 @@
 * [Interactive Version](https://github.com/selinacarter/AISDM-Meta-Repo/tree/main/Interactive_Version) - (Python )An interactive streamlit version of situation reports for disasters, including:
   * Winter Storm Fern - 02/2026
   * California Wildfires - 05/2026
-* [Metadata JSONs](https://github.com/selinacarter/AISDM-Meta-Repo/tree/main/Metadata_JSONS)
+* [Metadata JSONs](https://github.com/selinacarter/AISDM-Meta-Repo/tree/main/Metadata_JSONS) - (JSON) Each disaster's general information is stored in JSON files in order to track the various stages of development.
 * [SAM Attempt](https://github.com/selinacarter/AISDM-Meta-Repo/tree/main/SAM_Attempt) - (Python) Initial attempts at incorporating Meta's SAM model for disaster management
 * [Situation Reports](https://github.com/selinacarter/AISDM-Meta-Repo/tree/main/Situation_Reports) - (R) Brief documents that are designed to help inform emergency managers (EMs) on people movements after each disaster, including:
   * Winter Storm Fern - 02/2026 **FINISHED**
