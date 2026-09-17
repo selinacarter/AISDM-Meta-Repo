@@ -106,8 +106,8 @@ population_plot_n_difference(plot_ds = w[["latest_ds"]],
 
 # population_plot_n_difference(plot_ds = w[["first_ds"]],
 #                              plot_hour = w[["first_hour"]],
-#                              lon_limits = c(-118, -116), 
-#                              lat_limits = c(47, 48.5),
+#                              lon_limits = range(fb_data_bing$longitude), 
+#                              lat_limits = range(fb_data_bing$latitude),
 #                              zoom = 6,
 #                              tzone = tzone,
 #                              disaster_type = "fire"
