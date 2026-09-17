@@ -41,7 +41,7 @@ fetch_earthquakes <- function(
   return (eq)
 }
 
-shared_eq_limits <- function(
+disaster_limits <- function(
     lon_limits,
     lat_limits,
     start_date,
@@ -57,23 +57,14 @@ shared_eq_limits <- function(
   range(earthquakes$mag, na.rm = TRUE)
 }
 
-cutoff1 <- as.POSIXct(
-  paste0("2026-08-09", " ", substr("0000", 1, 2), ":", substr("0000", 3, 4)),
-  format = "%Y-%m-%d %H:%M",
-  tz = "America/Los_Angeles"
-)
-
-cutoff2 <- as.POSIXct(
-  paste0(plot_ds, " ", substr(plot_hour, 1, 2), ":", substr(plot_hour, 3, 4)),
-  format = "%Y-%m-%d %H:%M",
-  tz = "America/Los_Angeles"
-)
-
-earthquakes <- earthquakes |>
-  filter(
-    datetime_pst >= cutoff1,
-    datetime_pst <= cutoff2
-  )
+earthquakes <- fetch_earthquakes(lon_limits,
+                                 lat_limits,
+                                 start_date,
+                                 end_date,
+                                 min_magnitude)
+if (is.null(disaster_limits)){
+  disaster_limits <- range(earthquakes$mag, na.rm = TRUE) 
+}
 
 p1 <- p1 +
   geom_sf(
@@ -92,12 +83,11 @@ p1 <- p1 +
   scale_color_gradient(
     low = "gold",
     high = "red",
-    limits = eq_limits,
-    breaks = pretty(eq_limits, n = 5),
+    limits = disaster_limits,
+    breaks = pretty(disaster_limits, n = 5),
     oob = scales::squish,
     name = "Magnitude"
   ) + 
-  fill_scale +
   coord_sf(
     crs = st_crs(3857),
     xlim = xlim,

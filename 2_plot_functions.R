@@ -27,7 +27,8 @@ population_plot <- function(
     labels = NULL,
     label_angles = NULL,
     highway_detail = c("none", "major", "secondary", "all"),
-    disaster_type = NULL # "fire", "earthquake"
+    disaster_type = NULL, # "fire", "earthquake"
+    disaster_limits = NULL
 ) {
   
   metric <- match.arg(metric)

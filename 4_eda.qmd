@@ -10,7 +10,7 @@ Make sure you set `tzone` in the code chunk below to the relevant timezone. Then
 ## Data Cleaning + Loading
 ```{r}
 re_run_cleaning <- T
-tzone <- #### ADD TIMEZONE HERE
+tzone <- "America/Bogota"
 source("1_data_cleaning.R")
 source("2_plot_functions.R")
 ```
@@ -71,6 +71,29 @@ population_plot_n_difference(plot_ds = w[["latest_ds"]],
 )
 
 ```
+
+## Disaster-Specific 
+
+### Earthquakes
+
+```{r}
+# start and end dates for earthquakes, which can be adjusted
+# start_date <- as.Date(w[["first_ds"]]) -7
+# end_date <- as.Date(w[["first_ds"]])
+# min_magnitude <- 2.5
+
+# if you want shared legends, use disaster_limits()!!
+
+# population_plot_n_difference(plot_ds = w[["first_ds"]],
+#                              plot_hour = w[["first_hour"]],
+#                              lon_limits = range(fb_data_bing$longitude), 
+#                              lat_limits = range(fb_data_bing$latitude),
+#                              zoom = 6,
+#                              tzone = tzone,
+#                              disaster_type = "earthquake"
+#                              )
+```
+
 
 ## Animations
 
