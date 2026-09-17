@@ -95,6 +95,25 @@ population_plot_n_difference(plot_ds = w[["latest_ds"]],
 ```
 
 
+### Fires
+
+```{r}
+# start and end dates for earthquakes, which can be adjusted
+# start_date <- as.Date(w[["first_ds"]]) -7
+# end_date <- as.Date(w[["first_ds"]])
+
+# if you want shared legends, use disaster_limits()!!
+
+# population_plot_n_difference(plot_ds = w[["first_ds"]],
+#                              plot_hour = w[["first_hour"]],
+#                              lon_limits = c(-118, -116), 
+#                              lat_limits = c(47, 48.5),
+#                              zoom = 6,
+#                              tzone = tzone,
+#                              disaster_type = "fire"
+#                              )
+```
+
 ## Animations
 
 ```{r}

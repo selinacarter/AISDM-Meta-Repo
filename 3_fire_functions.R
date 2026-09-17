@@ -1,31 +1,123 @@
-# Wildfire-perimeters step. Builds the WFIGS query bbox from a buffer around
-# Spokane, downloads the *current* perimeters, and caches them (+ fetch time) to
-# fires.Rds for reproducibility. Network failure falls back to the cache, then to
-# an empty layer so a plot/report still renders. Pass re_run = TRUE to refresh.
-fetch_fires <- function(re_run = re_run_cleaning, cache_dir = rds_cache_dir,
-                        cache = "fires.Rds",
-                        center_lon = -117.4260, center_lat = 47.6588,
-                        buffer_m = 100000) {
+fetch_fires <- function(
+    start_date,
+    end_date,
+    lon_limits,
+    lat_limits,
+    re_run = re_run_cleaning,
+    cache_dir = rds_cache_dir,
+    cache = "fires.Rds",
+    date_field = "attr_FireDiscoveryDateTime",
+    layer_url = paste0(
+      "https://services3.arcgis.com/T4QMspbfLg3qTGWY/",
+      "ArcGIS/rest/services/",
+      "WFIGS_Interagency_Perimeters/",
+      "FeatureServer/0/query"
+    )
+) {
+  
+  # ------------------------------------------------------------
+  # Cache
+  # ------------------------------------------------------------
+  
   path <- cache_path(cache, cache_dir)
+  
   if (!re_run && file.exists(path)) {
     message("Loading cached ", path)
     return(readRDS(path))
   }
   
-  spokane <- st_as_sf(
-    data.frame(lon = center_lon, lat = center_lat),
-    coords = c("lon", "lat"), crs = 4326
+  
+  # ------------------------------------------------------------
+  # Check longitude / latitude limits
+  # ------------------------------------------------------------
+  
+  if (length(lon_limits) != 2 || length(lat_limits) != 2) {
+    stop(
+      "lon_limits and lat_limits must each contain exactly ",
+      "two values."
+    )
+  }
+  
+  if (lon_limits[1] >= lon_limits[2]) {
+    stop(
+      "lon_limits must be c(min_longitude, max_longitude)."
+    )
+  }
+  
+  if (lat_limits[1] >= lat_limits[2]) {
+    stop(
+      "lat_limits must be c(min_latitude, max_latitude)."
+    )
+  }
+  
+  
+  # ------------------------------------------------------------
+  # Convert dates
+  # ------------------------------------------------------------
+  
+  start_date <- as.POSIXct(
+    start_date,
+    tz = "UTC"
   )
-  # buffer_m-metre buffer around Spokane, back to lon/lat for the query bbox
-  extent <- st_buffer(st_transform(spokane, 3857), buffer_m) |> st_transform(4326)
-  bbox <- st_bbox(extent)
+  
+  end_date <- as.POSIXct(
+    end_date,
+    tz = "UTC"
+  )
+  
+  if (is.na(start_date) || is.na(end_date)) {
+    stop(
+      "start_date and end_date must be valid dates."
+    )
+  }
+  
+  if (start_date > end_date) {
+    stop(
+      "start_date must be before end_date."
+    )
+  }
+  
+  
+  # ------------------------------------------------------------
+  # Bounding box
+  # ------------------------------------------------------------
+  
+  bbox <- paste(
+    lon_limits[1],
+    lat_limits[1],
+    lon_limits[2],
+    lat_limits[2],
+    sep = ","
+  )
+  
+  
+  # ------------------------------------------------------------
+  # Date query
+  # ------------------------------------------------------------
+  
+  where <- paste0(
+    date_field,
+    " >= DATE '",
+    format(start_date, "%Y-%m-%d %H:%M:%S"),
+    "' AND ",
+    date_field,
+    " <= DATE '",
+    format(end_date, "%Y-%m-%d %H:%M:%S"),
+    "'"
+  )
+  
+  
+  # ------------------------------------------------------------
+  # Build query URL
+  # ------------------------------------------------------------
   
   url <- paste0(
-    "https://services3.arcgis.com/T4QMspbfLg3qTGWY/ArcGIS/rest/services/",
-    "WFIGS_Interagency_Perimeters_Current/FeatureServer/0/query?",
-    "where=1%3D1",
+    layer_url,
+    "?",
+    "where=",
+    URLencode(where, reserved = TRUE),
     "&geometry=",
-    bbox["xmin"], ",", bbox["ymin"], ",", bbox["xmax"], ",", bbox["ymax"],
+    URLencode(bbox, reserved = TRUE),
     "&geometryType=esriGeometryEnvelope",
     "&inSR=4326",
     "&spatialRel=esriSpatialRelIntersects",
@@ -34,43 +126,128 @@ fetch_fires <- function(re_run = re_run_cleaning, cache_dir = rds_cache_dir,
     "&f=geojson"
   )
   
-  message("Downloading wildfire perimeters from WFIGS -> ", path)
+  
+  # ------------------------------------------------------------
+  # Download
+  # ------------------------------------------------------------
+  
+  message(
+    "Downloading wildfire perimeters from WFIGS..."
+  )
+  
+  message(
+    "Dates: ",
+    format(start_date, "%Y-%m-%d"),
+    " to ",
+    format(end_date, "%Y-%m-%d")
+  )
+  
+  message(
+    "Longitude: ",
+    paste(lon_limits, collapse = " to ")
+  )
+  
+  message(
+    "Latitude: ",
+    paste(lat_limits, collapse = " to ")
+  )
+  
+  
+  # ------------------------------------------------------------
+  # Download with cache fallback
+  # ------------------------------------------------------------
+  
   tryCatch(
+    
     {
-      f <- st_read(url, quiet = TRUE)
+      f <- st_read(
+        url,
+        quiet = TRUE
+      )
+      f <- st_transform(f, 3857)
+      
+      message(
+        "Downloaded ",
+        nrow(f),
+        " fire perimeter(s)."
+      )
+      
+      
+      # --------------------------------------------------------
+      # Metadata
+      # --------------------------------------------------------
+      
       attr(f, "fetched_at") <- Sys.time()
-      saveRDS(f, path)
+      attr(f, "query_start") <- start_date
+      attr(f, "query_end") <- end_date
+      attr(f, "query_lon_limits") <- lon_limits
+      attr(f, "query_lat_limits") <- lat_limits
+      attr(f, "query_date_field") <- date_field
+      attr(f, "query_url") <- url
+      
+      
+      # --------------------------------------------------------
+      # Save
+      # --------------------------------------------------------
+      
+      saveRDS(
+        f,
+        path
+      )
+      
       f
     },
+    
+    
     error = function(e) {
+      
+      # --------------------------------------------------------
+      # Cache fallback
+      # --------------------------------------------------------
+      
       if (file.exists(path)) {
-        warning("Fire-perimeter download failed (", conditionMessage(e),
-                "); using cached ", path, ".")
+        
+        warning(
+          "Fire-perimeter download failed (",
+          conditionMessage(e),
+          "); using cached ",
+          path,
+          "."
+        )
+        
         readRDS(path)
+        
       } else {
-        warning("Fire-perimeter download failed (", conditionMessage(e),
-                ") and no cache exists; continuing with no fire perimeters.")
-        st_sf(geometry = st_sfc(crs = 4326))
+        
+        warning(
+          "Fire-perimeter download failed (",
+          conditionMessage(e),
+          ") and no cache exists; ",
+          "continuing with no fire perimeters."
+        )
+        
+        st_sf(
+          geometry = st_sfc(
+            crs = 3857
+          )
+        )
       }
     }
   )
 }
 
-# Human-readable timestamp of the perimeter snapshot, for the report to cite.
-fires_label <- function(fires) {
-  t <- attr(fires, "fetched_at")
-  if (inherits(t, "POSIXct") && length(t) == 1 && !is.na(t)) {
-    format(t, "%B %d, %Y %I:%M %p %Z")
-  } else {
-    "a cached snapshot (fetch time unavailable)"
-  }
-}
 
-p1 <- p1 |>
-  # Fire perimeters as a mapped colour so they get their own legend entry.
-  # clip_sf_to_box() crops them to the display box so they can't expand the frame.
+fires <- fetch_fires(
+  start_date = start_date,
+  end_date   = end_date,
+  lon_limits = lon_limits,
+  lat_limits = lat_limits,
+  re_run = TRUE
+)
+
+p1 <- p1 +
   geom_sf(
-    data = clip_sf_to_box(fires, xlim, ylim),
+    data = fires,
     aes(color = "Fire Perimeter"),
     fill = NA,
     linewidth = 0.5
