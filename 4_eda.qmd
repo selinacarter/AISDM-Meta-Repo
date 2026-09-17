@@ -72,3 +72,35 @@ population_plot_n_difference(plot_ds = w[["latest_ds"]],
 
 ```
 
+## Animations
+
+```{r}
+source("5_animations.R")
+```
+
+### Population Animation
+
+```{r}
+population_plot_animate(
+  metric = "crisis",
+  tzone = tzone,
+  lon_limits = range(fb_data_bing$longitude),
+  lat_limits = range(fb_data_bing$latitude),
+  fps = 8,
+  filename = "crisis.gif"
+)
+
+```
+
+### Population Animation
+
+```{r}
+population_plot_animate(
+  metric = "difference",
+  tzone = tzone,
+  lon_limits = range(fb_data_bing$longitude),
+  lat_limits = range(fb_data_bing$latitude),
+  fps = 8,
+  filename = "difference.gif"
+)
+```
