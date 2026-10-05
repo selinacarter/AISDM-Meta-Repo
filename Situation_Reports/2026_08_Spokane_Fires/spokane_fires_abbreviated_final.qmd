@@ -1,0 +1,313 @@
+---
+title: "Spokane Area Fires: Facebook Data Situation Report"
+subtitle: |
+  [NSF AI-SDM](https://www.cmu.edu/ai-sdm/) and Meta AI for Good\
+  Report Date: August 13, 2026 · Latest Data: August 12, 2026
+author:
+  - Nikita Jayaprakash
+  - Selina Carter
+  - Samsara Foubert
+#bibliography:
+#  - references.bib
+# Typst engine (NOT LaTeX): compiles in <1s, no TinyTeX, tighter layout and
+# easier to customize than
+format:
+  typst:
+    papersize: us-letter
+    margin: { x: 1.5cm, y: 1.5cm }   # tight margins -> more usable width for the maps
+    fontsize: 10pt
+    keep-typ: true                   # also writes .typ so you can peek/hand-tweak the layout
+    fig-format: png
+    fig-dpi: 300                     # high-res rasters so the dense tiles stay legible
+execute:
+  echo: false
+  warning: false
+  message: false
+  output: true                      # figures/tables opt in per chunk with `#| output: true`
+---
+
+```{r setup}
+#| include: false
+# Sourcing DEFINES functions only; the pipeline steps below do the work
+# this report and Colab notebook share ONE implementation (no duplicated logic).
+suppressPackageStartupMessages({
+  library(tidyverse); library(sf); library(lubridate)
+  library(ggforce); library(ggspatial); library(maptiles)
+  library(quadkeyr); library(prettymapr); library(patchwork)
+})
+source("1_data_cleaning_spokane_fires.R")  # plotting + helper functions (build_tiles, fetch_fires, plots)
+
+# CROPPED Spokane+Stevens data — built once by 2_geofilter_spokane.R into rds_spokane/.
+# report CONSUMES cached artifacts (no re-cropping, no raw CSVs needed).
+rds_load <- function(f) {
+  p <- file.path("rds_spokane", f)
+  if (!file.exists(p)) stop("Missing ", p, " — run 2_geofilter_spokane.R once (from /content) first.")
+  readRDS(p)
+}
+fb_data_bing <- rds_load("fb_data_bing.Rds")
+mp_data_bing <- rds_load("mp_data_bing.Rds")
+moved        <- rds_load("moved.Rds")
+aoi          <- rds_load("aoi.Rds")
+
+tiles_3857 <- build_tiles(fb_data_bing, re_run = TRUE)  # rebuild polygons from the CROPPED tiles
+fires      <- fetch_fires()                # WFIGS perimeters (cached snapshot)
+evac_zones <- fetch_evac_zones()           # empty layer unless EVAC_ZONES_URL set (maps still render)
+
+# County-line overlay: population_plot()/movement_plot2() read this global and clip it to
+# each frame. tryCatch so an offline render just skips the overlay instead of failing;
+# tigris_use_cache avoids re-downloading the shapefile on every render. (`aoi` comes from
+# 2_geofilter_spokane.R above.)
+options(tigris_use_cache = TRUE)
+counties <- tryCatch(tigris::counties(state = "WA", cb = TRUE, year = 2022),
+                     error = function(e) NULL)
+
+# Earliest/latest windows present in the data (no hardcoded dates) + pretty labels.
+w <- compute_windows(fb_data_bing)
+first_ds   <- w$first_ds;   first_hour  <- w$first_hour
+latest_ds  <- w$latest_ds;  latest_hour <- w$latest_hour
+first_label  <- w$first_label
+latest_label <- w$latest_label
+fires_snapshot_label <- fires_label(fires)
+
+# LEGIBILITY LEVER: frame every map to the fires + 15 km instead of the wide ~224 km
+# box, so ~2.4 km tiles are big enough to read. Swap the commented line for the wide view.
+# Frame every map to the fires + a margin (auto_fires) so all three fires AND the Spokane
+# metro are in view and the ~2.4 km tiles stay readable. Overlays are clipped to this box
+# (clip_sf_to_box in the plot fns) so the fire perimeters can't stretch the frame.
+report_extent <- study_extent("auto_fires", fires)
+# report_extent <- study_extent("movement", fires)  # tighter SE/metro box (crops NW fires)
+# report_extent <- SPOKANE_EXTENT
+pop_zoom <- 11                             # sharper basemap for the tighter extent
+
+# One shared figure of the two difference/zscore/count windows, framed once.
+lon_limits <- report_extent$lon
+lat_limits <- report_extent$lat
+
+# --- Evacuation-zone orientation panel (§1a) ---------------------------------
+# The z-score map is rendered a SECOND time at a fixed metro extent so it can sit
+# beside a screenshot of the county's official evacuation areas (SREC Evacuation
+# Address Lookup). This is an ORIENTATION aid, not a spatial join: the screenshot is
+# a static image, so any alignment is by eye, anchored on the shared fire perimeters.
+# Set EVAC_COMPARE_EXTENT to the lon/lat corners of your screenshot crop. The default
+# frames the Spokane metro core and the nearest fire (where the exodus signal is) and
+# matches study_extent("movement"); nudge it to match whatever rectangle you crop.
+EVAC_COMPARE_EXTENT <- list(lon = c(-117.90, -117.00), lat = c(47.40, 47.90))
+
+# Web-Mercator panel aspect (width : height) of a lon/lat box, so the saved PNG is
+# sized to the map's true shape (coord_sf keeps the map's aspect regardless) and the
+# two panels crop to the same rectangle.
+merc_aspect <- function(ext) {
+  R <- 6378137
+  x <- ext$lon * pi / 180 * R
+  y <- log(tan(pi / 4 + ext$lat * pi / 360)) * R
+  abs(diff(range(x))) / abs(diff(range(y)))
+}
+
+# Latest MOVEMENT window (08/16 only), labelled for the text. Population and movement
+# update independently, so the latest population window (`latest_label`) can lag movement.
+mv_latest <- moved |> dplyr::distinct(ds, hour) |>
+  dplyr::filter(hour %in% c("0800", "1600")) |> dplyr::arrange(ds, hour) |> dplyr::slice(dplyr::n())
+mv_latest_label <- format_time(as.character(mv_latest$ds), mv_latest$hour)
+
+# Shared fill limits across the first+latest windows so a side-by-side pair can use ONE
+# scale and ONE combined legend. symmetric=TRUE centers a diverging
+# scale on 0. Returns NULL if the column/rows are absent (caller falls back to per-panel).
+shared_limits <- function(col, symmetric = FALSE) {
+  if (!col %in% names(tiles_3857)) return(NULL)
+  v <- tiles_3857 |>
+    dplyr::filter((ds == first_ds & hour == first_hour) | (ds == latest_ds & hour == latest_hour),
+                  dplyr::between(longitude, lon_limits[1], lon_limits[2]),
+                  dplyr::between(latitude,  lat_limits[1], lat_limits[2])) |>
+    dplyr::pull(.data[[col]])
+  v <- v[is.finite(v)]
+  if (!length(v)) return(NULL)
+  r <- range(v, na.rm = TRUE)
+  if (symmetric) { m <- max(abs(r)); c(-m, m) } else r
+}
+
+# --- Network Coverage cross-check (connectivity confound) --------------------
+# From network_sitrep_Spokanefires_clean.ipynb (Stage 7): is an emptying tile
+# people leaving, or the tower/power dropping? Each declining population tile is
+# checked against Meta's daily Network Coverage layer (active / undetected /
+# outage-probability). Values are the notebook's headline; keep them in sync with
+# the latest run. confounded_share (ALL) = 0.0023; GENUINE_DROP 698 / CONFOUNDED 10
+# tile-windows; holds across tau {0.3-0.7} and k {2-5} sweeps; quadkey gate 1363/1363
+# exact. VERIFY against the latest notebook run before distribution.
+nc_confounded_share <- 0.0023
+nc_genuine_tiles    <- 698L
+nc_confounded_tiles <- 10L
+nc_decline_tiles    <- nc_genuine_tiles + nc_confounded_tiles
+nc_confounded_pct   <- scales::percent(nc_confounded_share, accuracy = 0.1)
+```
+
+```{r bluf-calc}
+# BLUF number computed from data rather than asserted.
+.bluf <- tiles_3857 |>
+  dplyr::filter(ds == latest_ds, hour == latest_hour,
+                dplyr::between(longitude, lon_limits[1], lon_limits[2]),
+                dplyr::between(latitude,  lat_limits[1], lat_limits[2]))
+.n_exodus <- if ("z_score" %in% names(.bluf)) sum(.bluf$z_score <= -2, na.rm = TRUE) else NA_integer_
+```
+
+## Key take-aways
+
+- Key Outflow & Influx Zones (as of Aug. 12 evening): Population outflow is highest near the northeastern section of the Old Trails Fire, while incoming movements are primarily directed toward Airway Heights and central Spokane.
+
+- Evolution of Influx Hubs: When data first became available on Aug. 3, urban Spokane (likely around the Convention Center shelter) saw the largest influx of people. By Aug. 12, Airway Heights became the primary destination for incoming populations.
+
+- Activity Trends Over Time: Movement volume peaked on Aug. 3 and has since tempered as of Aug. 12, indicating a gradual stabilization, though population movement remains elevated relative to the 90-day baseline.
+
+- Population Presence Within Fire Zones (Aug. 12): Despite significant evacuation from the northeast Old Trails Fire area compared to baseline, population density inside parts of the perimeter remains high. Conversely, the Autumn Lane fire zone shows fewer people.
+
+## 1. Per-tile user population: Difference in crisis window vs. pre-crisis baseline
+
+::: {layout-ncol="2"}
+![](difference/01_difference_2026-08-03_0000.png)
+
+![](difference/03_difference_2026-08-12_1600.png)
+:::
+
+\vspace{-1cm}
+
+![Difference (crisis − baseline) per tile; left = first window, right = latest. Shared symmetric scale + one combined legend. Blue = fewer than baseline (exodus), red = more (influx), grey = NA.](difference/_legend_difference.png){width=500}
+
+The difference maps below plot (crisis − baseline) per tile, with fire perimeters in dark red (WFIGS *current* feed, cached `r fires_snapshot_label`). The strongest exodus (blue) hugs the northeast fire perimeter nearest the metro region. The strongest influx (red) sits in Spokane's urban core on Aug 3 (possibly given the Convention Center shelter), and later in the in the Airway Heights region on Aug 12.
+
+On Aug. 3 (the first day of available data), people movements were more acute compared to Aug. 12. This indicates that people movements are starting to wane as the fire progresses - but not yet reverting to pre-fire levels (vs. a prior 90-day baseline).
+
+## 2. Raw user counts
+
+Raw users per tile given latest data (red = more, blue = fewer) indicate that the metro region is the most transited, even when close to fire perimeters. Red stays concentrated in Spokane's urban core. Almost no users are near the Autumn Lane fire, while some remain near the Fairview Fire as well as the northeast corner of the Old Trails Fire. Both panels share one scale and one combined legend.
+
+Note that despite the general exodus from the northeast corner of the Old Trails Fire (relative to a prior 90-day baseline of user count), raw user counts are at around 170-300 users across several 1.6-km square tiles. The Autumn Lane fire has far fewer users, less than 50 per 1.6-km square tile.
+
+![](raw_crisis_counts/03_crisis_2026-08-12_1600.png){width=70% fig-align="center"}
+
+\vspace{-3cm}
+
+![Raw crisis user counts per tile; right = latest. Shared scale + one combined legend. Red = more users, blue = fewer. Shows where users ARE, not where change occurred.](raw_crisis_counts/_legend_crisis.png){width=500}
+
+{{< pagebreak >}}
+
+# Appendix
+
+```{r fact-box}
+#| output: true
+# (Task 5) Incident fact-box. FACTS are from the task brief - VERIFY against the
+incident_facts <- tibble::tribble(
+  ~Field,         ~Value,
+  "Incident",     "Spokane Area Fires: Old Trails, Autumn Lane, Fairview",
+  "Total size",   "~10,332 acres (Old Trails 3,556; Autumn Lane 5,784; Fairview 992)",
+  "Containment",  "Old Trails 43%, Autumn Lane 47%, Fairview 31% (Aug 10 )",
+  "Origin",       "Aug 1, 2026 15:00 PDT; cause under investigation",
+  "Location",     "Spokane & Stevens Counties, WA, USA",
+  "Evacuation",   "Levels 1–3 (Be Ready / Be Set / Go Now); see spokane911.com for latest",
+  "Data available",   paste0(first_label, " to ", latest_label, "; fire ongoing as of Aug 13")
+)
+knitr::kable(incident_facts, col.names = c("", ""))
+```
+
+This report summarizes Meta Data for Good population and movement signals for the days of available data (Aug 3–12) to help the Incident Management Team (IMT) see **where** anomalous population change is concentrated and **whether** it is consistent with the active evacuation orders. It is a decision-support supplement, not a headcount: every figure reflects Facebook users with Location Services on, not the whole population (see Data caveats).
+
+## Data description
+
+We use Meta's **Facebook Movement During Crisis** and **Facebook Population During Crisis** datasets, which display location activity from Facebook users (with **Location Services on**) used to estimate how population shifts during a crisis. The data represent **Facebook app users**, not everyone in the area — henceforth "users." The datasets compare user behavior geographically near the incident with pre-crisis behavior. There are two granularities: fixed **8-hour windows** (starting 00:00 / 08:00 / 16:00 Pacific) and **Bing tiles** (level 14, \~2.4 km or \~1.5 mi squares). For privacy, a window is shown as NA / grey when either the crisis **or** the baseline count is under 10 users. Grey indicates "one side was below threshold" (not "no change" or "fewer than 10 people total"). Two signals are used: comparison to a **pre-crisis baseline** for the same time-of-day / day-of-week (a 90-day baseline for movement and population datasets) and **raw user counts** are determined at window *T*.
+
+As of this report the latest **population** window is `r latest_label` and the latest **movement** window is `r mv_latest_label`. Population maps (§1–§2) therefore show the 8-hour window ending `r latest_label`.
+
+::: {.callout-warning title="Data caveats" appearance="simple"}
+- **Sample bias.** this data covers only Facebook users with Location Services turned on.
+- **Data intervals.** 8-hour windows, up to \~8 h delay.
+- **Tile size.** \~2.4 km or \~1.5 mi, neighborhood-scale, not address-level.
+- **Privacy controls.** A window is NA / grey when the crisis or baseline count is \<10 (both \<10 means the row is dropped).
+- **Baselines.** Movement and population data use a 90-day baseline before the crisis.
+- **Evacuation vs connectivity.** A tile emptying could mean people left **or** power/cell dropped.
+- **Who is under-counted.** The signal skews toward mobile, connected, vehicle-owning residents and may under-capture access-and-functional-needs populations, such as people with mobility limits, no vehicle, or no transit option.
+- **Users =/= people =/= vehicles.** Counts are a fraction of residents, and residents may map to more vehicles still (according to AAR, most local households evacuate with two). These figures are not a road-traffic count.
+:::
+
+## 1. Per-tile user population: crisis window vs. pre-crisis baseline
+
+The table compares users per tile in the first available crisis window (`r first_label`) to the pre-crisis baseline for the same time-of-day / day-of-week 90 days earlier. *Most* tiles are near baseline, but a few show large **differences**.
+
+```{r tbl-stats}
+#| output: true
+first_day <- fb_data_bing |>
+  filter(ds == first_ds, hour == first_hour) |>
+  filter(between(latitude, lat_limits[1], lat_limits[2])) |>
+  filter(between(longitude, lon_limits[1], lon_limits[2]))
+
+result <- tibble(
+  `Number of Users` = c(paste0("Crisis (", first_label, ")"), "Baseline (90-day, same window)"),
+  Min     = c(min(first_day$n_crisis,    na.rm = TRUE), min(first_day$n_baseline,    na.rm = TRUE)),
+  Average = c(mean(first_day$n_crisis,   na.rm = TRUE), mean(first_day$n_baseline,   na.rm = TRUE)),
+  Median  = c(median(first_day$n_crisis, na.rm = TRUE), median(first_day$n_baseline, na.rm = TRUE)),
+  Max     = c(max(first_day$n_crisis,    na.rm = TRUE), max(first_day$n_baseline,    na.rm = TRUE))
+)
+knitr::kable(result, digits = 1)
+```
+
+Out of `r length(first_day$n_difference)` tiles, `r sum(first_day$n_difference <= -50, na.rm = TRUE)` had a difference ≤ −50 (people leaving, ≈ `r round(sum(first_day$n_difference <= -50, na.rm = TRUE)*1.5*1.5, 0)` sq mi) and `r sum(first_day$n_difference >= 50, na.rm = TRUE)` had ≥ 50 (people entering, ≈ `r round(sum(first_day$n_difference >= 50, na.rm = TRUE)*1.5*1.5, 0)` sq mi).
+
+```{r fig-hist}
+#| output: true
+#| fig-width: 6.5
+#| fig-height: 2.8
+#| fig-cap: "Distribution of per-tile user count differences (crisis vs. 90-day baseline), first window."
+ggplot(first_day) +
+  geom_histogram(aes(x = n_difference), bins = 40) +
+  theme_bw() +
+  labs(x = "Users per tile (crisis − baseline)", y = "Number of tiles",
+       title = paste0("Per-tile difference (crisis − baseline) — ", first_label))
+```
+
+## 1a. Standardized change (z-score)
+
+The difference maps use data-driven color limits, so one large-influx tile can wash the ±50 signal to pale grey. The z-score is Meta's recommended metric, and it captures each tile's change in standard deviations vs its own baseline, clipped to ±4 — so anomalies stand out. Blue = fewer users than normal (exodus); red = more users (influx); grey = no data. Because it is measured against each tile's *own* pre-fire baseline, the z-score separates *left because they evacuated* from *empty because it is rural* — which the raw-count map (§2) cannot — so it is the map we use to orient this report to the official evacuation areas.
+
+### Orienting the maps to the evacuation areas
+
+The two panels below place the latest-window z-score (zoomed to the Spokane metro and the nearest fire, where the evacuation signal is concentrated) beside a screenshot of the county's official evacuation areas (Spokane County / SREC *Evacuation Address Lookup*). Both panels show the **same fires** — the dark-red perimeters on the right and the **Level 3 (Go Now)** areas on the left wrap the same fire — so a reader can line the two up by the fire shapes and then carry that orientation to every other map in this report.
+
+Note: the left panel is a static, non-georeferenced screenshot, so the alignment is approximate and by eye.
+
+```{r fig-zscore-evac-save}
+#| include: false
+# Render the latest-window z-score at the FIXED evac-compare extent and save it so it can sit
+# beside the (static) evacuation-zone screenshot in a 2-up. merc_aspect() sizes the canvas to the
+# map's true shape so the panel roughly fills it and both images crop to the same rectangle.
+.evac_asp <- merc_aspect(EVAC_COMPARE_EXTENT)
+.evac_w   <- 7
+.evac_h   <- .evac_w / .evac_asp
+invisible(save_pop_map("zscore", latest_ds, latest_hour, "zscore_evac_compare.png",
+                       extent = EVAC_COMPARE_EXTENT, zoom = pop_zoom,
+                       width = .evac_w, height = .evac_h))
+```
+
+::: {layout-ncol="2"}
+![**Official evacuation areas** — Spokane County / SREC *Evacuation Address Lookup* (BETA), captured Aug 9, 2026 \~00:10 PT. Green = Level 1 (Be Ready), yellow = Level 2 (Be Set), red = Level 3 (Go Now). Per SREC the map is for reference only; check webpage for latest evacuation zones.](evac_zones_srec.png)
+
+![**Population anomaly (z-score), latest data window** — blue = below normal (exodus), red = above (influx), grey = NA; fire perimeters in dark red. Same fires as the left panel.](outputs/zscore_evac_compare.png)
+:::
+
+**Interpretation.** Where the compact **blue (exodus)** cluster on the right falls inside a **red Level 3 (Go Now)** area on the left, the movement signal is consistent with the order. A fire-adjacent tile that is at or above normal (grey-to-red) *inside* a red zone would instead flag **possible residents remaining** — worth checking against ground reports, since the city's 2026 wildfire evacuation-drill after-action review (AAR) found a meaningful share of residents do not leave immediately even after a Go Now alert. *Timing:* the z-score panel is the 8-hour window ending `r latest_label`.
+
+Now the first vs. latest comparison, on the same fixed ±4 scale with one combined legend:
+
+::: {layout-ncol="2"}
+
+![](zscore_users/01_zscore_2026-08-03_0000.png)
+
+![](zscore_users/03_zscore_2026-08-12_1600.png)
+:::
+
+![Standardized change (z-score, RdBu, clipped ±4); left = first window, right = latest. The ±4 scale is fixed and shared, so the panels are directly comparable. Blue = exodus, red = influx, grey = NA (not 'no change').](zscore_users/_legend_zscore.png){width=500}
+
+```{r zscore-note-calc}
+.zt <- tiles_3857 |>
+  dplyr::filter(ds == latest_ds, hour == latest_hour,
+                dplyr::between(longitude, lon_limits[1], lon_limits[2]),
+                dplyr::between(latitude,  lat_limits[1], lat_limits[2]))
+.n_strong_exodus <- if ("z_score" %in% names(.zt)) sum(.zt$z_score <= -2, na.rm = TRUE) else NA_integer_
+.n_strong_influx <- if ("z_score" %in% names(.zt)) sum(.zt$z_score >=  2, na.rm = TRUE) else NA_integer_
+```

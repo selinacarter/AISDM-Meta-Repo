@@ -1,0 +1,470 @@
+---
+title: "Spokane Fires Situation Report"
+subtitle: "Date of Preparation: August 2026"
+author:
+  - name: "Nikita Jayaprakash"
+  - name: "Selina Carter"
+  - name: "Samsara Foubert"
+thanks: "This report was prepared as part of the partnership between Carnegie Mellon University and Meta's AI for Good."
+
+execute: 
+  warning: false
+  message: false
+  output: false
+  echo: false
+
+fig-pos: H
+
+format:
+  pdf:
+    colorlinks: true
+    pdf-engine: xelatex
+    tbl-cap-location: bottom
+    geometry:
+      - margin=0.75in
+    include-in-header:
+      text: |
+        \usepackage{etoolbox}
+        \usepackage{fancyhdr}
+
+        \makeatletter
+        \patchcmd{\@makefntext}
+          {\parindent 1em}
+          {\parindent 1em\leftskip -0.5in\rightskip -0.5in}
+          {}{}
+        \makeatother
+
+        \pagestyle{fancy}
+        \fancyhf{}
+        \fancyfoot[R]{\thepage}
+        \renewcommand{\headrulewidth}{0pt}
+        \renewcommand{\footrulewidth}{0pt}
+---
+# Disaster Manager Brief - Spokane Fires in Washington
+
+## Overview
+
+```{r, warning = F, echo = F}
+library(tidyverse)
+library(sf)
+library(lubridate)
+library(gganimate)
+library(ggforce)
+library(ggspatial)
+library(maptiles)
+library(quadkeyr)
+library(prettymapr)
+library(patchwork)
+```
+
+Summary here...
+
+```{r, echo = F, warning=F, message = F}
+######------- Data Cleaning Functions --------#######
+
+# Convert possible "\N" values to proper numeric NA values
+clean_numeric <- function(x) {
+  suppressWarnings(as.numeric(na_if(as.character(x), "\\N")))
+}
+
+
+###### ----- Aggregate CSVs ------ ######
+
+aggregate_csvs <- function(path_parts,
+                           output_name = "aggregated.csv",
+                           dedupe = TRUE,
+                           lat_col = NULL,
+                           lon_col = NULL,
+                           prefix = "",
+                           calculate_county_change = FALSE,
+                           county_group_cols = c("county_geoid", "county_name", "county_state", "ds")) {
+  
+  data_dir <- do.call(here::here, as.list(path_parts))
+  
+  #cat("Reading from:", data_dir, "\n")
+  
+  if (!dir.exists(data_dir)) {
+    stop("Directory does not exist: ", data_dir)
+  }
+  
+  csv_files <- list.files(
+    path = data_dir,
+    pattern = "\\.csv$",
+    full.names = TRUE
+  )
+  
+  if (length(csv_files) == 0) {
+    stop("No CSV files found in: ", data_dir)
+  }
+  
+  #cat("Found", length(csv_files), "files\n")
+  
+  combined_data <- lapply(csv_files, function(f) {
+    read_csv(f, show_col_types = FALSE) |>
+      mutate(source_file = basename(f))
+  }) |>
+    bind_rows()
+  
+  if (dedupe) {
+    combined_data <- combined_data |> distinct()
+  }
+  
+  
+  # Extract date and time from file names
+  combined_data <- combined_data |>
+    mutate(
+      ds = as.Date(sub(".*_(\\d{4}-\\d{2}-\\d{2})_.*", "\\1", source_file)),
+      hour = sub(".*_(\\d{4}-\\d{2}-\\d{2})_(\\d{4}).*", "\\2", source_file)
+    )
+  
+  return(combined_data)
+}
+
+
+analyze_dataset <- function(df) {
+  list(
+    missing = df |>
+      summarise(across(everything(), ~mean(is.na(.)))),
+
+    numeric_summary = df |>
+      summarise(across(where(is.numeric),
+                       list(mean = mean, sd = sd),
+                       na.rm = TRUE)),
+
+    n_rows = nrow(df),
+    n_cols = ncol(df)
+  )
+}
+
+
+###### ------- Movement Between Places w/o Aggregation ----#####
+
+mp_data_bing <- aggregate_csvs(
+  path_parts = c("Movement Between Places During Crisis"),
+  output_name = "tk_movement_between_places_bing.csv"
+)
+
+
+
+###### ------- Facebook Population w/o Aggregation ----#####
+
+fb_data_bing <- aggregate_csvs(
+  path_parts = c("Facebook Population During Crisis - Bing Tiles"),
+  output_name = "facebook_pop_bing.csv",
+  lat_col = "latitude",
+  lon_col = "longitude",
+  prefix = ""
+) |>
+  drop_na(n_crisis)
+```
+
+
+```{r, echo = F, warning=F, message = F}
+moved <- mp_data_bing |>
+  filter(start_longitude != end_longitude,
+         start_latitude != end_latitude) |>
+  drop_na(n_crisis) |>
+  rename(`# Users` = n_crisis)
+pts <- rbind(
+  data.frame(lon = min(fb_data_bing$longitude), lat = min(fb_data_bing$latitude)),
+  data.frame(lon = max(fb_data_bing$longitude), lat = max(fb_data_bing$latitude))
+)
+
+pts_sf <- st_as_sf(pts, coords = c("lon", "lat"), crs = 4326)
+
+# Download OpenStreetMap tiles
+osm <- get_tiles(
+  pts_sf,
+  provider = "OpenStreetMap",
+  crop = TRUE,
+  zoom = 6
+)
+tiles <- quadkey_df_to_polygon(fb_data_bing)
+tiles_3857 <- st_transform(tiles, 3857) |>
+  rename(`# Users` = n_crisis)
+```
+
+```{r}
+format_time <- function(ds, hour){
+  df <- data.frame(ds, hour)
+  
+  df$datetime_cet <- ymd_hm(
+    paste(df$ds, df$hour),
+    tz = "America/Los_Angeles"
+  )
+  
+  # Format
+  df$formatted <- format(
+    df$datetime_cet,
+    "%B %d, %Y %I%p %Z"
+  )
+  
+  # Remove leading zero from hour and lowercase AM/PM
+  df$formatted <- gsub(" 0", " ", df$formatted)
+  df$formatted <- gsub("AM", "am", df$formatted)
+  df$formatted <- gsub("PM", "pm", df$formatted)
+  
+  df$formatted
+}
+
+population_plot <- function(
+  plot_ds,
+  plot_hour,
+  title = TRUE,
+  plot_title = NULL,
+  lon_limits = NULL,   # c(min_lon, max_lon)
+  lat_limits = NULL    # c(min_lat, max_lat)
+) {
+
+  lims <- c(
+    min(tiles_3857$`# Users`, na.rm = TRUE),
+    max(tiles_3857$`# Users`, na.rm = TRUE)
+  )
+
+  first_time_pop <- tiles_3857 |>
+    filter(ds == plot_ds, hour == plot_hour)
+
+  # Default: no zoom
+  xlim <- NULL
+  ylim <- NULL
+
+  # Convert lon/lat limits to EPSG:3857
+  if (!is.null(lon_limits) && !is.null(lat_limits)) {
+
+    bbox_ll <- st_as_sfc(
+      st_bbox(
+        c(
+          xmin = lon_limits[1],
+          xmax = lon_limits[2],
+          ymin = lat_limits[1],
+          ymax = lat_limits[2]
+        ),
+        crs = st_crs(4326)
+      )
+    )
+
+    bbox_3857 <- st_transform(bbox_ll, 3857) |>
+      st_bbox()
+
+    xlim <- c(bbox_3857["xmin"], bbox_3857["xmax"])
+    ylim <- c(bbox_3857["ymin"], bbox_3857["ymax"])
+  }
+
+  p1 <- ggplot() +
+    layer_spatial(osm) +
+    geom_sf(
+      data = first_time_pop,
+      aes(fill = `# Users`),
+      color = "white",
+      linewidth = 0.1,
+      alpha = 1
+    ) +
+    scale_fill_gradient(
+      trans = "log10",
+      low = "blue",
+      high = "red",
+      limits = lims,
+      labels = scales::label_comma()
+    ) +
+    coord_sf(
+      crs = st_crs(3857),
+      xlim = xlim,
+      ylim = ylim,
+      expand = FALSE
+    ) +
+    theme_minimal() +
+    theme(
+      axis.title = element_blank(),
+      axis.ticks = element_blank(),
+      axis.text = element_blank()
+    )
+
+  if (title) {
+    if (is.null(plot_title)) {
+      p1 + ggtitle(format_time(plot_ds, plot_hour))
+    } else {
+      p1 + ggtitle(plot_title)
+    }
+  } else {
+    p1
+  }
+}
+```
+
+
+## Population Plots
+
+```{r fig-first-day, output = T, fig.cap = "Description here", fig.height = 9}
+population_plot("2026-08-03", "0000") /
+population_plot("2026-08-03", "0800") /
+  population_plot("2026-08-03", "1600")+
+  plot_layout(guides = "collect") &
+  theme(
+    legend.position = "right",
+    legend.key.height = unit(2, "cm"),
+    legend.direction = "vertical"
+  )
+```
+
+
+```{r fig-pop-zoomed, output = T, fig.cap = "description here.", fig.height = 9}
+population_plot(
+  "2026-08-03", "0000",
+  lon_limits = c(-118.5, -115.5),
+  lat_limits = c(47, 49)
+) / population_plot(
+  "2026-08-03", "0800",
+  lon_limits = c(-118.5, -115.5),
+  lat_limits = c(47, 49)
+) / population_plot(
+  "2026-08-03", "1600",
+  lon_limits = c(-118.5, -115.5),
+  lat_limits = c(47, 49)
+)+
+  plot_layout(guides = "collect") &
+  theme(
+    legend.position = "right",
+    legend.key.height = unit(2, "cm"),
+    legend.direction = "vertical"
+  )
+```
+## Movement Plots
+
+```{r}
+movement_plot <- function(
+  plot_ds,
+  plot_hour,
+  plot_title,
+  lon_limits = NULL,   # c(min_lon, max_lon)
+  lat_limits = NULL,    # c(min_lat, max_lat)
+  n_limit = NULL
+) {
+  time_moved <- moved |>
+    filter(
+      ds == plot_ds,
+      hour == plot_hour
+    ) |>
+    filter(
+      (between(start_latitude, lat_limits[1], lat_limits[2]) &between(start_longitude, lon_limits[1], lon_limits[2])) | 
+        (between(end_latitude, lat_limits[1], lat_limits[2]) & between(end_longitude, lon_limits[1], lon_limits[2]))
+    ) |>
+    filter(between(`# Users`, n_limit[1], n_limit[2]))
+  
+  # plot limits
+  plot_lat <- c(
+    min(c(time_moved$start_latitude, time_moved$end_latitude)-0.5),
+    max(c(time_moved$start_latitude, time_moved$end_latitude))+0.5
+  )
+  plot_long <- c(
+    min(c(time_moved$start_longitude, time_moved$end_longitude))-0.5,
+    max(c(time_moved$start_longitude, time_moved$end_longitude))+0.5
+  )
+  
+  n_limit <- c(n_limit[1], max(time_moved$`# Users`))
+  
+  ggplot() +
+    layer_spatial(osm) +
+    geom_link(
+      data = time_moved,
+      aes(
+        x = start_longitude,
+        y = start_latitude,
+        xend = end_longitude,
+        yend = end_latitude,
+        color = `# Users`
+      ),
+      alpha = 0.5,
+      arrow = arrow(length = unit(0.03, "npc")),
+      linewidth = 1
+    ) +
+    scale_color_gradient(
+      low = "blue",
+      high = "red",
+      limits = n_limit,
+      ) +
+    coord_sf(
+     xlim = plot_long,
+     ylim = plot_lat,
+      expand = FALSE
+    ) +
+    theme_minimal() +
+    theme(
+      axis.title = element_blank(),
+      axis.ticks = element_blank(),
+      axis.text = element_blank()
+    ) +
+    ggtitle(plot_title)
+}
+```
+
+## Small Group Movements
+
+```{r fig-move, output = T, fig.cap = "description here", fig.height = 9}
+movement_plot("2026-08-03",
+              "0800",
+              "Aug 3rd 12am - 8am",
+              lon_limits = c(-118.5, -115.5),
+              lat_limits = c(47, 49),
+              n_limit = c(10, 15)) /
+  movement_plot("2026-08-03",
+              "1600",
+              "Aug 3rd 8am - 4pm",
+              lon_limits = c(-118.5, -115.5),
+              lat_limits = c(47, 49),
+              n_limit = c(10, 15))+
+  plot_layout(guides = "collect") &
+  theme(
+    legend.position = "right",
+    legend.key.height = unit(2, "cm"),
+    legend.direction = "vertical"
+  )
+
+```
+
+## Medium Group Movements
+
+```{r fig-move2, output = T, fig.cap = "description here", fig.height = 9}
+movement_plot("2026-08-03",
+              "0800",
+              "Aug 3rd 12am - 8am",
+              lon_limits = c(-118.5, -115.5),
+              lat_limits = c(47, 49),
+              n_limit = c(15, 25)) /
+  movement_plot("2026-08-03",
+              "1600",
+              "Aug 3rd 8am - 4pm",
+              lon_limits = c(-118.5, -115.5),
+              lat_limits = c(47, 49),
+              n_limit = c(15, 25)) +
+  plot_layout(guides = "collect") &
+  theme(
+    legend.position = "right",
+    legend.key.height = unit(2, "cm"),
+    legend.direction = "vertical"
+  )
+
+```
+
+## Large Group Movements
+
+```{r fig-move3, output = T, fig.cap = "description here", fig.height = 9}
+movement_plot("2026-08-03",
+              "0800",
+              "Aug 3rd 12am - 8am",
+              lon_limits = c(-118.5, -115.5),
+              lat_limits = c(47, 49),
+              n_limit = c(25, 90)) /
+  movement_plot("2026-08-03",
+              "1600",
+              "Aug 3rd 8am - 4pm",
+              lon_limits = c(-118.5, -115.5),
+              lat_limits = c(47, 49),
+              n_limit = c(25, 90)) +
+  plot_layout(guides = "collect") &
+  theme(
+    legend.position = "right",
+    legend.key.height = unit(2, "cm"),
+    legend.direction = "vertical"
+  )
+
+```

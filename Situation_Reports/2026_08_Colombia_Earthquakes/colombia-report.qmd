@@ -1,0 +1,492 @@
+---
+title: "Colombia Earthquakes: Facebook Data Situation Report"
+subtitle: |
+  [NSF AI-SDM](https://www.cmu.edu/ai-sdm/) and Meta AI for Good\
+  Report Date: August 19, 2026 · Latest Data: August 18, 2026
+author:
+  - Nikita Jayaprakash
+  - Selina Carter
+bibliography:
+  - references.bib
+# Typst engine (NOT LaTeX): compiles in <1s, no TinyTeX, tighter layout and
+# easier to customize than
+format:
+  typst:
+    papersize: us-letter
+    margin: { x: 1.5cm, y: 1.5cm }   # tight margins -> more usable width for the maps
+    fontsize: 10pt
+    keep-typ: true                   # also writes .typ so you can peek/hand-tweak the layout
+    fig-format: png
+    fig-dpi: 300                     # high-res rasters so the dense tiles stay legible
+execute:
+  echo: false
+  warning: false
+  message: false
+  output: true                      # figures/tables opt in per chunk with `#| output: true`
+---
+
+# Disaster Manager Brief - Colombia Earthquakes
+
+```{r, warning = F, echo = F}
+library(tidyverse)
+library(sf)
+library(lubridate)
+library(gganimate)
+library(ggforce)
+library(ggspatial)
+library(maptiles)
+library(quadkeyr)
+library(prettymapr)
+library(patchwork)
+
+env <- new.env()
+env$re_run_cleaning <- FALSE
+
+source("data-cleaning.R", local = env)
+attach(env)
+pop_zoom <- 6
+```
+
+```{r}
+lon_limits = c(-77, -72)
+lat_limits = c(4, 8)
+usgs_url <- paste0(
+          "https://earthquake.usgs.gov/fdsnws/event/1/query?",
+          "format=geojson",
+          "&starttime=", Sys.Date() - 17,
+          "&endtime=", Sys.Date(),
+          "&minlatitude=", lat_limits[1],
+          "&maxlatitude=", lat_limits[2],
+          "&minlongitude=", lon_limits[1],
+          "&maxlongitude=", lon_limits[2],
+          "&minmagnitude=2.5"
+        )
+earthquakes <- st_read(usgs_url, quiet = TRUE) |>
+          st_transform(3857)|>
+          mutate(
+            datetime = as.POSIXct(
+              time / 1000,
+              origin = "1970-01-01",
+              tz = "UTC"
+            ),
+            datetime_pst = format(
+              datetime,
+              tz = "America/Los_Angeles"
+            )
+          ) |>
+          arrange(datetime) |>
+          mutate(eq_order = LETTERS[row_number()])
+.eq_limits <- shared_eq_limits(
+  lon_limits = lon_limits,
+  lat_limits = lat_limits
+)
+## looking at bing tiles with around Manizales/Pereira
+exodus_table_Manizales = fb_data_bing |>
+  filter(ds == first_ds,
+         hour == "0800",
+         
+         between(latitude, 4.7684396, 4.869044), #Found coordinates on Google Earth
+         between(longitude, -75.775019, -75.643922)) |>
+
+  arrange(n_difference) |>
+  #head(n = 1000) |>
+  select(latitude, longitude, n_difference, n_crisis, n_baseline)
+
+exodus_mani = prettyNum(round(-1*sum(exodus_table_Manizales$n_difference),0), big.mark=",")
+area_mani = 2.4*2.4*nrow(exodus_table_Manizales)
+
+
+## looking at bing tiles with around Medellin
+influx_table_Medellin = fb_data_bing |>
+  filter(ds == first_ds,
+         hour == "0800",
+         
+         between(latitude, 6.1729730, 6.3796606), #Found coordinates on Google Earth
+         between(longitude, -75.643922, -75.5187122)) |>
+
+  arrange(n_difference) |>
+  #head(n = 1000) |>
+  select(latitude, longitude, n_difference, n_crisis, n_baseline)
+
+influx_medellin = prettyNum(round(sum(influx_table_Medellin$n_difference, na.rm=T),0), big.mark=",")
+area_medellin = 2.4*2.4*nrow(influx_table_Medellin)
+
+```
+
+
+## Key Takeaways
+
+* $\underline{\text{San Jose del Palmar}}$: following several earthquakes and aftershocks (magnitudes 4.2-7.5) starting Aug. 10, with an epicenter near San Jose del Palmar, people movements are most intense in near the city of **Dosquebradas** (@fig-SJP_diff, @fig-mani_diff).
+
+  * On Aug 10, there was a major exodus of Facebook users in this area:  a total of `r exodus_mani` more users *exited* the area relative to a prior 90-day baseline, corresponding to an area of roughly `r area_mani` square kilometers (@fig-mani_diff).
+
+  * On Aug. 10 (first day of available data), people movements were more acute compared the following days. This indicates that people movements are starting to wane as aftershocks continued - but not yet reverting to pre-earthquake levels (vs. a prior 90-day baseline).
+
+* $\underline{\text{Medellin}}$:  On Aug. 10, there is a general influx of Facebook users to **Medellin** relative to a 90-day baseline (@fig-medellin_diff).
+
+  * On Aug 10, there was a net influx of Facebook users in this area:  a total of `r influx_medellin` more users *entered* the area relative to a prior 90-day baseline, corresponding to an area of roughly `r area_medellin` square kilometers. 
+
+* $\underline{\text{Piedecuesta}}$: On Aug. 15, a 4.2-magnitude earthquake caused a patchwork of user influx and exodus across the area, relative to a 90-day baseline (@fig-pied_diff). 
+
+```{r}
+#| output: true
+#| label: tbl-earthquakes
+#| tbl-cap: "Recent Earthquakes in Colombia from @usgs_earthquake_catalog"
+earthquakes_final <- earthquakes |>
+  mutate(datetime_colombia = format(
+  datetime,
+  tz = "America/Bogota",
+  format = "%B %d, %Y %I:%M %p %Z"
+  )) |>
+  select(eq_order, place, mag, datetime_colombia) |>
+    st_drop_geometry() |>
+  rename(`Epicenter Location` = place,
+         Magnitude = mag,
+         `Local Time of Earthquake` = datetime_colombia,
+         Label = eq_order)
+  
+knitr::kable(earthquakes_final, digits = 1)
+```
+
+## Overview
+
+This report focuses on earthquakes in Colombia and population movements in the surrounding areas from Aug, 10-18, 2026. This time period covers five earthquakes in near San Jose del Palmar and Piedecuesta in Colombia (@tbl-earthquakes). This analysis focuses on high-activity areas (i.e. areas where there are more or fewer users during the time of crisis than compared to a 90-day baseline) near the epicenter of the earthquakes. There is also a relatively high influx near Bogota, but we do not focus on Bogota in this report.
+
+1. A major earthquake with a magnitude of 7.4 occurred near San Jose del Palmar on Aug. 10, followed by a sequence of moderate earthquakes (with magntiudes 4.3-5) near the same area from Aug. 10-13. Near this area, there seems to be a **large exodus near Dosquebradas** in the province of Risaralda (@fig-mani_diff), and a **slight inflow into Medellin** in the province of Antioquia (@fig-medellin_diff).
+
+2. There was also a moderate earthquake of magnitude 4.2 near Piedecuesta on August 15th. This area has a many points of inflow and outflow, with some notably high levels of inflow near Villanueva, Santander and Covarachia, Boyaca (@fig-pied_diff).
+
+3. We note that population differences (relative to a prior 90-day baseline level) do not imply large/small raw population counts present in each city. These can remain high throughout the crises (@fig-counts). 
+
+
+## 1. Per-tile user population: Difference in crisis window vs. pre-crisis baseline
+
+
+The difference maps below plot (crisis − baseline) per tile, with epicenters marked in circles. The strongest exodus is in the Dosquebradas metro region, while there is a net influx in Medellin.
+
+On Aug. 10 (first day of available data), people movements were more acute compared the following days. This indicates that people movements are starting to wane as aftershocks continued - but not yet reverting to pre-earthquake levels (vs. a prior 90-day baseline).
+
+We focus here on the days immediately following the earthquakes; please note the lastest data, zoomed out, in the Appendix (@fig-full).
+
+
+#### Earthquakes near San Jose del Palmar, Colombia
+
+People movements are most intense in near the city of **Dosquebradas** (@fig-SJP_diff, @fig-mani_diff). On Aug 10, there was a major exodus of Facebook users in this area:  a total of `r exodus_mani` more users *exited* the area relative to a prior 90-day baseline, corresponding to an area of roughly `r area_mani` square kilometers (@fig-mani_diff).
+
+
+```{r}
+#| output: true
+#| fig-width: 10
+#| fig-height: 4
+#| label: fig-SJP_diff
+#| out-width: "100%"
+#| fig-cap: "Difference (crisis − baseline) per tile; left = first window, right = latest. Shared symmetric scale + one combined legend. Blue = fewer than baseline (exodus), red = more (influx), grey = NA."
+lon_limits = c(-77, -74)
+lat_limits = c(4, 7)
+.dl <- shared_limits("Difference between baseline and crisis", 
+                     symmetric = TRUE, hour1 = "0800")
+x_point <- st_as_sf(
+  data.frame(longitude = c(-75.6718, -75.59), 
+             latitude = c(4.8364, 6.23),
+             label = c("Dosquebradas", "Medellin")),
+  coords = c("longitude", "latitude"),
+  crs = 4326
+) |>
+  st_transform(3857)
+label_angles <- c(
+  "Dosquebradas" = 45,
+  "Medellin" = 45
+)
+
+(population_plot_n_difference(first_ds, "0800", 
+                              fill_limits = .dl,
+                              eq_limits = .eq_limits,
+                              lon_limits = lon_limits, 
+                              lat_limits = lat_limits, 
+                              zoom = pop_zoom, 
+                              labels = x_point,
+                              label_angles = label_angles) | population_plot_n_difference("2026-08-11", "1600", 
+                                                                                          fill_limits = .dl,
+                              eq_limits = .eq_limits,
+                              lon_limits = lon_limits, 
+                              lat_limits = lat_limits, 
+                              zoom = pop_zoom, 
+                              labels = x_point, 
+                              label_angles = label_angles) | population_plot_n_difference("2026-08-13", "0800", 
+                                                                                          fill_limits = .dl,
+                              eq_limits = .eq_limits,
+                              lon_limits = lon_limits, 
+                              lat_limits = lat_limits, 
+                              zoom = pop_zoom, 
+                              labels = x_point,
+                              label_angles = label_angles)) +
+  patchwork::plot_layout(guides = "collect") & ggplot2::theme(legend.position = "bottom")
+```
+
+
+```{r}
+#| output: true
+#| fig-width: 10
+#| fig-height: 3
+#| label: fig-mani_diff
+#| out-width: "100%"
+#| fig-cap: "Difference (crisis − baseline) per tile; left = first window, right = latest. Shared symmetric scale + one combined legend. Blue = fewer than baseline (exodus), red = more (influx), grey = NA."
+lon_limits = c(-76.7, -75.3)
+lat_limits = c(4.5, 5.5)
+.dl <- shared_limits("Difference between baseline and crisis", 
+                     symmetric = TRUE, hour1 = "0800")
+x_point <- st_as_sf(
+  data.frame(longitude = c(-75.6718), 
+             latitude = c(4.8364),
+             label = c("Dosquebradas")),
+  coords = c("longitude", "latitude"),
+  crs = 4326
+) |>
+  st_transform(3857)
+label_angles <- c("Dosquebradas" = -45)
+
+pop_zoom <- 7
+(population_plot_n_difference(first_ds, "0800", 
+                              fill_limits = .dl,
+                              eq_limits = .eq_limits,
+                              lon_limits = lon_limits, 
+                              lat_limits = lat_limits, 
+                              zoom = pop_zoom, 
+                              labels = x_point,
+                              label_angles = label_angles) | population_plot_n_difference("2026-08-11", "1600", 
+                                                                                          fill_limits = .dl,
+                              eq_limits = .eq_limits,
+                              lon_limits = lon_limits, 
+                              lat_limits = lat_limits, 
+                              zoom = pop_zoom,
+                              labels = x_point,
+                              label_angles = label_angles) | population_plot_n_difference("2026-08-13", "0800", 
+                                                                                          fill_limits = .dl,
+                              eq_limits = .eq_limits,
+                              lon_limits = lon_limits, 
+                              lat_limits = lat_limits, 
+                              zoom = pop_zoom,
+                              labels = x_point,
+                              label_angles = label_angles)) +
+  patchwork::plot_layout(guides = "collect") & ggplot2::theme(legend.position = "bottom")
+```
+ 
+```{r}
+#| output: false
+## looking at top 10 bing tiles with most exodus
+fb_data_bing |>
+  filter(ds == first_ds,
+         hour == "0800",
+         between(latitude, lat_limits[1], lat_limits[2]),
+         between(longitude, lon_limits[1], lon_limits[2])) |>
+  arrange(n_difference) |>
+  head(n = 10) |>
+  select(latitude, longitude, n_difference, n_crisis, n_baseline)
+```
+
+
+```{r}
+#| output: true
+#| fig-width: 10
+#| fig-height: 3
+#| label: fig-medellin_diff
+#| out-width: "100%"
+#| fig-cap: "Difference (crisis − baseline) per tile; left = first window, right = latest. Shared symmetric scale + one combined legend. Blue = fewer than baseline (exodus), red = more (influx), grey = NA."
+lon_limits = c(-77, -74)
+lat_limits = c(5.5, 7)
+x_point <- st_as_sf(
+  data.frame(longitude = c(-75.59), 
+             latitude = c(6.23),
+             label = c("Medellin")),
+  coords = c("longitude", "latitude"),
+  crs = 4326
+) |>
+  st_transform(3857)
+label_angles <- c("Medellin" = -45)
+.dl <- shared_limits("Difference between baseline and crisis", 
+                     symmetric = TRUE, hour1 = "0800")
+pop_zoom <- 7
+(population_plot_n_difference(first_ds, "0800", 
+                              fill_limits = .dl,
+                              eq_limits = .eq_limits,
+                              lon_limits = lon_limits, 
+                              lat_limits = lat_limits, 
+                              zoom = pop_zoom,
+                              labels = x_point,
+                              label_angles = label_angles) | population_plot_n_difference("2026-08-11", "1600", 
+                                                                                          fill_limits = .dl,
+                              eq_limits = .eq_limits,
+                              lon_limits = lon_limits, 
+                              lat_limits = lat_limits, 
+                              zoom = pop_zoom, 
+                              labels = x_point,
+                              label_angles = label_angles) | population_plot_n_difference("2026-08-13", "0800", 
+                                                                                          fill_limits = .dl,
+                              eq_limits = .eq_limits,
+                              lon_limits = lon_limits, 
+                              lat_limits = lat_limits, 
+                              zoom = pop_zoom, 
+                              labels = x_point,
+                              label_angles = label_angles)) +
+  patchwork::plot_layout(guides = "collect") & ggplot2::theme(legend.position = "bottom")
+```
+
+
+
+```{r}
+#| output: false
+## looking at top 10 bing tiles with most inflow
+fb_data_bing |>
+  filter(ds == first_ds,
+         hour == "0800",
+         between(latitude, lat_limits[1], lat_limits[2]),
+         between(longitude, lon_limits[1], lon_limits[2])) |>
+  arrange(n_difference) |>
+  head(n = 10) |>
+  select(latitude, longitude, n_difference, n_crisis, n_baseline)
+```
+
+
+
+#### Earthquakes near Piedecuesta, Colombia
+
+On Aug. 15, a 4.2-magnitude earthquake caused a patchwork of user influx and exodus across the area, relative to a 90-day baseline (@fig-pied_diff). 
+
+```{r}
+#| output: true
+#| fig-width: 10
+#| fig-height: 3
+#| label: fig-pied_diff
+#| out-width: "100%"
+#| fig-cap: "Difference (crisis − baseline) per tile; left = first window, right = latest. Shared symmetric scale + one combined legend. Blue = fewer than baseline (exodus), red = more (influx), grey = NA."
+lon_limits = c(-75, -72)
+lat_limits = c(6,8)
+x_point <- st_as_sf(
+  data.frame(longitude = c( -72.69653, -73.17993), 
+             latitude = c( 6.522730, 6.675519),
+             label = c("Covarachía", "Villanueva")),
+  coords = c("longitude", "latitude"),
+  crs = 4326
+) |>
+  st_transform(3857)
+label_angles <- c(
+  "Covarachía" = 45,
+  "Villanueva" = -45
+)
+pop_zoom <- 8
+population_plot_n_difference("2026-08-16", "0000",
+                              eq_limits = .eq_limits,
+                              lon_limits = lon_limits, lat_limits = lat_limits, 
+                              zoom = pop_zoom,
+                             labels = x_point) +
+  ggplot2::theme(legend.position = "right")
+```
+
+
+```{r}
+#| output: false
+## looking at top 10 bing tiles with most inflow
+#NOTE: 2nd row is Covarachía,Boyaca and 3rd row is Villanueva, Santander
+fb_data_bing |>
+  filter(ds == "2026-08-16",
+         hour == "0000",
+         between(latitude, lat_limits[1], lat_limits[2]),
+         between(longitude, lon_limits[1], lon_limits[2])) |>
+  arrange(desc(n_difference)) |>
+  head(n = 5) |>
+  select(latitude, longitude, n_difference, n_crisis, n_baseline)
+```
+
+```{r}
+#| output: false
+## looking at top 10 bing tiles with most inflow
+
+fb_data_bing |>
+  filter(ds == "2026-08-16",
+         hour == "0000",
+         between(latitude, lat_limits[1], lat_limits[2]),
+         between(longitude, lon_limits[1], lon_limits[2])) |>
+  arrange(n_difference) |>
+  head(n = 5) |>
+  select(latitude, longitude, n_difference, n_crisis, n_baseline)
+```
+
+
+## 2. Raw user counts
+
+Raw users per tile given latest data (red = more, blue = fewer) indicate that the metro regions are the most transited, even when close to epicenters. Red stays concentrated in each city's urban core. These raw user counts reflect population patterns for these regions. Note that despite the general exodus from some areas (such as Dosquebradas in @fig-mani_diff and Medellin in @fig-medellin_diff) relative to a prior 90-day baseline of user count), raw user counts remain high in these areas.
+
+
+```{r}
+#| output: true
+#| fig-width: 12
+#| fig-height: 3
+#| label: fig-counts
+#| out-width: "100%"
+#| fig-cap: "Raw crisis user counts per tile; right = latest. Shared scale + one combined legend. Red = more users, blue = fewer. Shows where users ARE, not where change occurred."
+lon_limits = c(-79, -71)
+lat_limits = c(4, 8)
+pop_zoom <- 6
+ population_plot_n_crisis(latest_ds, latest_hour, 
+                          #fill_limits = .cl,
+                          eq_limits = .eq_limits,
+                          lon_limits = lon_limits, lat_limits = lat_limits, zoom = pop_zoom)+
+  ggplot2::theme(legend.position = "right")
+```
+
+
+{{< pagebreak >}}
+
+## Appendix
+
+This report summarizes Meta Data for Good population and movement signals for the days of available data (Aug 3–12) to help the Incident Management Team (IMT) see **where** anomalous population change is concentrated and **whether** it is consistent with the active evacuation orders. It is a decision-support supplement, not a headcount: every figure reflects Facebook users with Location Services on, not the whole population (see Data caveats).
+
+## Data description
+
+We use Meta's **Facebook Movement During Crisis** and **Facebook Population During Crisis** datasets, which display location activity from Facebook users (with **Location Services on**) used to estimate how population shifts during a crisis. The data represent **Facebook app users**, not everyone in the area — henceforth "users." The datasets compare user behavior geographically near the incident with pre-crisis behavior. There are two granularities: fixed **8-hour windows** (starting 00:00 / 08:00 / 16:00 Pacific) and **Bing tiles** (level 14, \~2.4 km or \~1.5 mi squares). For privacy, a window is shown as NA / grey when either the crisis **or** the baseline count is under 10 users. Grey indicates "one side was below threshold" (not "no change" or "fewer than 10 people total"). Two signals are used: comparison to a **pre-crisis baseline** for the same time-of-day / day-of-week (a 90-day baseline for movement and population datasets) and **raw user counts** are determined at window *T*.
+
+As of this report the latest **population** window is `r latest_label`. Population maps (§1–§2) therefore show the 8-hour window ending `r latest_label`.
+
+::: {.callout-warning title="Data caveats" appearance="simple"}
+- **Sample bias.** this data covers only Facebook users with Location Services turned on.
+- **Data intervals.** 8-hour windows, up to \~8 h delay.
+- **Tile size.** \~2.4 km or \~1.5 mi, neighborhood-scale, not address-level.
+- **Privacy controls.** A window is NA / grey when the crisis or baseline count is \<10 (both \<10 means the row is dropped).
+- **Baselines.** Movement and population data use a 90-day baseline before the crisis.
+- **Evacuation vs connectivity.** A tile emptying could mean people left **or** power/cell dropped.
+- **Who is under-counted.** The signal skews toward mobile, connected, vehicle-owning residents and may under-capture access-and-functional-needs populations, such as people with mobility limits, no vehicle, or no transit option.
+- **Users =/= people =/= vehicles.** Counts are a fraction of residents, and residents may map to more vehicles still. These figures are not a road-traffic count.
+:::
+
+#### Full Scope of Data
+
+```{r}
+#| output: true
+#| fig-width: 10
+#| fig-height: 4
+#| label: fig-full
+#| out-width: "100%"
+#| fig-cap: "Difference (crisis − baseline) per tile; left = first window, right = latest. Shared symmetric scale + one combined legend. Blue = fewer than baseline (exodus), red = more (influx), grey = NA."
+lon_limits = c(-79, -71)
+lat_limits = c(4, 8)
+.dl <- shared_limits("Difference between baseline and crisis", 
+                     symmetric = TRUE, hour1 = "0800")
+(population_plot_n_difference(first_ds, "0800", 
+                              fill_limits = .dl,
+                              eq_limits = .eq_limits,
+                              lon_limits = lon_limits, lat_limits = lat_limits, 
+                              zoom = pop_zoom) |
+ population_plot_n_difference(latest_ds, latest_hour, fill_limits = .dl,
+                              eq_limits = .eq_limits,
+                              lon_limits = lon_limits, lat_limits = lat_limits, 
+                              zoom = pop_zoom)) +
+  patchwork::plot_layout(guides = "collect") & ggplot2::theme(legend.position = "bottom")
+```
+
+
+
+```{r}
+#| output: true
+#| fig-cap: "The below graphic is sourced from @usgs_us6000tjl2_shakemap."
+knitr::include_graphics("image.pdf")
+```

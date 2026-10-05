@@ -1,0 +1,336 @@
+---
+title: "Bordeaux Fires Situation Report"
+subtitle: "Date of Preparation: August 2026"
+author:
+  - name: "Nikita Jayaprakash"
+  - name: "Selina Carter"
+  - name: "Samsara Foubert"
+thanks: "This report was prepared as part of the partnership between Carnegie Mellon University and Meta's AI for Good."
+execute: 
+  warning: false
+  message: false
+  output: false
+  echo: false
+fig-pos: H
+bibliography: references.bib
+format:
+  pdf:
+    colorlinks: true
+    pdf-engine: xelatex
+    tbl-cap-location: bottom
+    include-in-header:
+      text: |
+        \usepackage{etoolbox}
+        \usepackage{fancyhdr}
+
+        \makeatletter
+        \patchcmd{\@makefntext}
+          {\parindent 1em}
+          {\parindent 1em\leftskip -0.5in\rightskip -0.5in}
+          {}{}
+        \makeatother
+        
+        \pagestyle{fancy} 
+        \fancyhf{} 
+        \fancyfoot[R]{\thepage}
+        \renewcommand{\headrulewidth}{0pt}
+        \renewcommand{\footrulewidth}{0pt}
+---
+# Disaster Manager Brief - Bordeaux Fires in France
+
+## Overview
+
+```{r, warning = F, echo = F}
+library(tidyverse)
+library(sf)
+library(lubridate)
+library(gganimate)
+library(ggforce)
+library(ggspatial)
+library(maptiles)
+library(quadkeyr)
+library(prettymapr)
+library(patchwork)
+```
+
+The Bordeaux fires in France started on Tuesday, July 21st, 2026. [@bbc2026wildfires](https://www.bbc.com/news/articles/cdx82rl5g0do) states that these fires in France led to the evacuation of tens of thousands of people and the burning of 10,000 hectares (almost 25,000 acres) as of July 24.
+
+```{r, echo = F, warning=F, message = F}
+######------- Data Cleaning Functions --------#######
+
+# Convert possible "\N" values to proper numeric NA values
+clean_numeric <- function(x) {
+  suppressWarnings(as.numeric(na_if(as.character(x), "\\N")))
+}
+
+
+###### ----- Aggregate CSVs ------ ######
+
+aggregate_csvs <- function(path_parts,
+                           output_name = "aggregated.csv",
+                           dedupe = TRUE,
+                           lat_col = NULL,
+                           lon_col = NULL,
+                           prefix = "",
+                           calculate_county_change = FALSE,
+                           county_group_cols = c("county_geoid", "county_name", "county_state", "ds")) {
+  
+  data_dir <- do.call(here::here, as.list(path_parts))
+  
+  #cat("Reading from:", data_dir, "\n")
+  
+  if (!dir.exists(data_dir)) {
+    stop("Directory does not exist: ", data_dir)
+  }
+  
+  csv_files <- list.files(
+    path = data_dir,
+    pattern = "\\.csv$",
+    full.names = TRUE
+  )
+  
+  if (length(csv_files) == 0) {
+    stop("No CSV files found in: ", data_dir)
+  }
+  
+  #cat("Found", length(csv_files), "files\n")
+  
+  combined_data <- lapply(csv_files, function(f) {
+    read_csv(f, show_col_types = FALSE) |>
+      mutate(source_file = basename(f))
+  }) |>
+    bind_rows()
+  
+  if (dedupe) {
+    combined_data <- combined_data |> distinct()
+  }
+  
+  
+  # Extract date and time from file names
+  combined_data <- combined_data |>
+    mutate(
+      ds = as.Date(sub(".*_(\\d{4}-\\d{2}-\\d{2})_.*", "\\1", source_file)),
+      hour = sub(".*_(\\d{4}-\\d{2}-\\d{2})_(\\d{4}).*", "\\2", source_file)
+    )
+  
+  return(combined_data)
+}
+
+
+analyze_dataset <- function(df) {
+  list(
+    missing = df |>
+      summarise(across(everything(), ~mean(is.na(.)))),
+
+    numeric_summary = df |>
+      summarise(across(where(is.numeric),
+                       list(mean = mean, sd = sd),
+                       na.rm = TRUE)),
+
+    n_rows = nrow(df),
+    n_cols = ncol(df)
+  )
+}
+
+
+###### ------- Movement Between Places w/o Aggregation ----#####
+
+mp_data_bing <- aggregate_csvs(
+  path_parts = c("Movement Between Places During Crisis"),
+  output_name = "tk_movement_between_places_bing.csv"
+)
+
+
+
+###### ------- Facebook Population w/o Aggregation ----#####
+
+fb_data_bing <- aggregate_csvs(
+  path_parts = c("Facebook Population During Crisis - Bing Tiles"),
+  output_name = "facebook_pop_bing.csv",
+  lat_col = "latitude",
+  lon_col = "longitude",
+  prefix = ""
+)
+```
+
+
+```{r, echo = F, warning=F, message = F}
+moved <- mp_data_bing |>
+  filter(start_longitude != end_longitude,
+         start_latitude != end_latitude) |>
+  drop_na(n_crisis) |>
+  rename(`# Users` = n_crisis)
+pts <- rbind(
+  data.frame(lon = min(fb_data_bing$longitude), lat = min(fb_data_bing$latitude)),
+  data.frame(lon = max(fb_data_bing$longitude), lat = max(fb_data_bing$latitude))
+)
+
+pts_sf <- st_as_sf(pts, coords = c("lon", "lat"), crs = 4326)
+
+# Download OpenStreetMap tiles
+osm <- get_tiles(
+  pts_sf,
+  provider = "OpenStreetMap",
+  crop = TRUE,
+  zoom = 12
+)
+tiles <- quadkey_df_to_polygon(fb_data_bing)
+tiles_3857 <- st_transform(tiles, 3857) |>
+  drop_na(n_crisis) |>
+  rename(`# Users` = n_crisis)
+```
+
+```{r}
+french_time <- function(ds, hour){
+  df <- data.frame(ds, hour)
+  
+  df$datetime_cet <- ymd_hm(
+    paste(df$ds, df$hour),
+    tz = "America/Los_Angeles"
+  ) |>
+    with_tz("Europe/Paris")
+  
+  # Format
+  df$formatted <- format(
+    df$datetime_cet,
+    "%B %d, %Y %I%p %Z"
+  )
+  
+  # Remove leading zero from hour and lowercase AM/PM
+  df$formatted <- gsub(" 0", " ", df$formatted)
+  df$formatted <- gsub("AM", "am", df$formatted)
+  df$formatted <- gsub("PM", "pm", df$formatted)
+  
+  df$formatted
+}
+
+movement_plot <- function(plot_ds, plot_hour, plot_title){
+  time_moved <- moved |>
+    filter(ds == plot_ds, 
+           hour == plot_hour)
+  ggplot() +
+    layer_spatial(osm) +
+    geom_link(
+      data = time_moved,
+      aes(
+        x = start_longitude,
+        y = start_latitude,
+        xend = end_longitude,
+        yend = end_latitude,
+        color = `# Users`,
+        #colour = after_stat(index)
+      ),
+      alpha = 0.5,
+      arrow = arrow(length = unit(0.03, "npc")),
+      linewidth = 1
+    ) +
+    coord_sf(expand = FALSE) +
+    theme_minimal() +
+     theme(axis.title = element_blank(), axis.ticks = element_blank(),
+    axis.text = element_blank()
+)+ 
+    ggtitle(plot_title)
+}
+
+population_plot <- function(plot_ds, plot_hour, title = T, plot_title = NULL){
+  
+  lims <- c(min(tiles_3857$`# Users`,
+                na.rm = T),
+            max(tiles_3857$`# Users`,
+                na.rm = T))
+  first_time_pop <- tiles_3857 |>
+    filter(ds == plot_ds) |>
+    filter(hour == plot_hour)
+  p1 <- ggplot() +
+    layer_spatial(osm) +
+    geom_sf(
+      data = first_time_pop,
+      aes(fill = `# Users`),
+      color = "white",
+      linewidth = 0.1,
+      alpha = 0.5
+    ) +
+    scale_fill_gradient(low = "yellow", high = "red",limits = lims)+
+    coord_sf(crs = st_crs(3857),
+             expand = FALSE) +
+    theme_minimal() +
+    theme(axis.title = element_blank(), axis.ticks = element_blank(),
+    axis.text = element_blank()
+)
+    
+  if (title){
+    if (is.null(plot_title)){
+      p1 + ggtitle(french_time(plot_ds, plot_hour))
+    } else{
+      p1 + ggtitle(plot_title)
+    }
+  } else{
+    p1
+  }
+}
+```
+
+
+## First Recorded Date
+
+```{r, output = T}
+population_plot("2026-07-27", "0000") +population_plot("2026-07-27", "0800") + plot_layout(guides = "collect") &
+  theme(
+    legend.position = "bottom",
+    legend.key.width = unit(2, "cm"),
+    legend.direction = "horizontal"
+  )
+```
+
+```{r, output = T}
+plot_title <- paste0(french_time("2026-07-27", "0000"), " to ", french_time("2026-07-27", "0800"))
+movement_plot("2026-07-27", "0800", 
+              plot_title) 
+```
+
+## All Times Points
+
+```{r}
+french_time <- function(ds, hour){
+  df <- data.frame(ds, hour)
+  
+  df$datetime_cet <- ymd_hm(
+    paste(df$ds, df$hour),
+    tz = "America/Los_Angeles"
+  ) |>
+    with_tz("Europe/Paris")
+  
+  # Format
+  df$formatted <- format(
+    df$datetime_cet,
+    "%b %d, %I%p"
+  )
+  
+  # Remove leading zero from hour and lowercase AM/PM
+  df$formatted <- gsub(" 0", " ", df$formatted)
+  df$formatted <- gsub("AM", "am", df$formatted)
+  df$formatted <- gsub("PM", "pm", df$formatted)
+  
+  df$formatted
+}
+```
+
+
+```{r, output = T, fig.height = 12, fig.width = 10}
+plots <- list(plot_spacer())
+for (ds in as.character(unique(tiles$ds))){
+  for (hour in c("0000", "0800", "1600")){
+    p <- population_plot(ds, hour, 
+            plot_title = french_time(ds, hour))
+    plots <- append(plots, p)
+  }
+}
+wrap_plots(plots, ncol = 3)+ plot_layout(guides = "collect") &
+  theme(
+    legend.position = "bottom",
+    legend.key.width = unit(2, "cm"),
+    legend.direction = "horizontal"
+  )
+```
+
+## References

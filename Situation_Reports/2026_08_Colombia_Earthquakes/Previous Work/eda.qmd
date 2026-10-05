@@ -1,0 +1,85 @@
+---
+title: "Colombia Earthquakes EDA"
+subtitle: "Date of Preparation: August 16, 2026"
+author:
+  - name: "Nikita Jayaprakash"
+  - name: "Selina Carter"
+  - name: "Samsara Foubert"
+thanks: "This report was prepared as part of the partnership between Carnegie Mellon University and Meta's AI for Good."
+
+execute: 
+  warning: false
+  message: false
+  output: false
+  echo: false
+
+fig-pos: H
+bibliography: references.bib
+format:
+  pdf:
+    colorlinks: true
+    pdf-engine: xelatex
+    tbl-cap-location: bottom
+    geometry:
+      - margin=0.75in
+    include-in-header:
+      text: |
+        \usepackage{etoolbox}
+        \usepackage{fancyhdr}
+
+        \makeatletter
+        \patchcmd{\@makefntext}
+          {\parindent 1em}
+          {\parindent 1em\leftskip -0.5in\rightskip -0.5in}
+          {}{}
+        \makeatother
+
+        \pagestyle{fancy}
+        \fancyhf{}
+        \fancyfoot[R]{\thepage}
+        \renewcommand{\headrulewidth}{0pt}
+        \renewcommand{\footrulewidth}{0pt}
+---
+# Disaster Manager Brief - Spokane Fires in Washington
+
+## Overview
+
+```{r, warning = F, echo = F}
+library(tidyverse)
+library(sf)
+library(lubridate)
+library(gganimate)
+library(ggforce)
+library(ggspatial)
+library(maptiles)
+library(quadkeyr)
+library(prettymapr)
+library(patchwork)
+#setwd("C:/Users/selin/Dropbox/CMU/Meta_AI_good/fire")
+source("data-cleaning.R")
+```
+
+```{r}
+fb_data_bing <- load_population()
+tiles_3857   <- build_tiles(fb_data_bing)
+w <- compute_windows(fb_data_bing)
+```
+
+```{r}
+ population_plot_n_difference(
+    w$first_ds, w$first_hour,
+    lon_limits = c(-79, -70),
+    lat_limits = c(1, 12)
+  )
+```
+
+
+```{r}
+ population_plot_n_difference(
+    w$latest_ds, w$latest_hour,
+    lon_limits = c(-79, -70),
+    lat_limits = c(1, 12)
+  )
+```
+
+

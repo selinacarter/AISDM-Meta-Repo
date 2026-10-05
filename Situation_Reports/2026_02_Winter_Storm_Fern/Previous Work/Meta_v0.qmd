@@ -1,0 +1,214 @@
+---
+title: "Meta Data"
+execute: 
+  warning: false
+  message: false
+fig-pos: H
+format:
+  pdf:
+    colorlinks: true
+    pdf-engine: xelatex
+---
+
+# Fern General
+```{r, execute=FALSE}
+## Do not use
+
+library(readr)
+library(dplyr)
+library(here)
+
+# Relative path from project root
+data_dir <- here("Meta", "Fern_General", "Business_Activity")
+
+csv_files <- list.files(
+  path = data_dir,
+  pattern = "\\.csv$",
+  full.names = TRUE
+)
+
+# Read and combine
+combined_data <- lapply(csv_files, function(f) {
+  read_csv(f, show_col_types = FALSE) %>%
+    mutate(source_file = basename(f))
+}) %>%
+  bind_rows()
+
+# Remove exact duplicate rows
+combined_data_dedup <- combined_data %>%
+  distinct()
+
+# write output
+write_csv(
+  combined_data_dedup,
+  here("Meta", "Fern_General", "Business_Activity", "business_activity_aggregated.csv")
+)
+
+cat("Done. Aggregated file saved as business_activity_aggregated.csv\n")
+cat("Rows before dedupe:", nrow(combined_data), "\n")
+cat("Rows after dedupe:", nrow(combined_data_dedup), "\n")
+```
+
+```{r}
+library(readr)
+library(dplyr)
+library(here)
+
+aggregate_csvs <- function(path_parts,
+                           output_name = "aggregated.csv",
+                           dedupe = TRUE) {
+  
+  # Build directory path using here()
+  data_dir <- do.call(here::here, as.list(path_parts))
+  
+  cat("Reading from:", data_dir, "\n")
+  
+  if (!dir.exists(data_dir)) {
+    stop("Directory does not exist: ", data_dir)
+  }
+  
+  # Get CSV files
+  csv_files <- list.files(
+    path = data_dir,
+    pattern = "\\.csv$",
+    full.names = TRUE
+  )
+  
+  if (length(csv_files) == 0) {
+    stop("No CSV files found in: ", data_dir)
+  }
+  
+  cat("Found", length(csv_files), "files\n")
+  
+  # Read and combine
+  combined_data <- lapply(csv_files, function(f) {
+    read_csv(f, show_col_types = FALSE) %>%
+      mutate(source_file = basename(f))
+  }) %>%
+    bind_rows()
+  
+  # Deduplicate (optional)
+  if (dedupe) {
+    combined_data_dedup <- combined_data %>% distinct()
+  } else {
+    combined_data_dedup <- combined_data
+  }
+  
+  # Output path
+  output_file <- file.path(data_dir, output_name)
+  
+  # Write file
+  write_csv(combined_data_dedup, output_file)
+  
+  # Logs
+  cat("Saved to:", output_file, "\n")
+  cat("Rows before dedupe:", nrow(combined_data), "\n")
+  cat("Rows after dedupe:", nrow(combined_data_dedup), "\n")
+  
+  return(combined_data_dedup)
+}
+```
+
+## Business Activity
+
+```{r}
+library(readr)
+library(dplyr)
+library(here)
+
+# Relative path from project root
+ba_data_dir <- here("Meta", "Fern_General", "Business_Activity")
+
+ba_csv_files <- list.files(
+  path = ba_data_dir,
+  pattern = "\\.csv$",
+  full.names = TRUE
+)
+
+# Read and combine
+ba_combined_data <- lapply(ba_csv_files, function(f) {
+  read_csv(f, show_col_types = FALSE) %>%
+    mutate(source_file = basename(f))
+}) %>%
+  bind_rows()
+
+# Remove exact duplicate rows
+ba_combined_data_dedup <- ba_combined_data %>%
+  distinct()
+
+# write output
+write_csv(
+  ba_combined_data_dedup,
+  here("Meta", "Fern_General", "Business_Activity", "business_activity_aggregated.csv")
+)
+
+cat("Done. Aggregated file saved as business_activity_aggregated.csv\n")
+cat("Rows before dedupe:", nrow(ba_combined_data), "\n")
+cat("Rows after dedupe:", nrow(ba_combined_data_dedup), "\n")
+```
+
+```{r}
+ba_data <- aggregate_csvs(
+  path_parts = c("Meta", "Fern_General", "Business_Activity"),
+  output_name = "business_activity_aggregated.csv"
+)
+```
+
+
+## Movement Between Places
+
+```{r}
+# Relative path from project root
+mp_data_dir <- here("Meta", "Fern_General", "Movement_between_Places")
+
+mp_csv_files <- list.files(
+  path = mp_data_dir,
+  pattern = "\\.csv$",
+  full.names = TRUE
+)
+
+# Read and combine
+mp_combined_data <- lapply(mp_csv_files, function(f) {
+  read_csv(f, show_col_types = FALSE) %>%
+    mutate(source_file = basename(f))
+}) %>%
+  bind_rows()
+
+# Remove exact duplicate rows
+mp_combined_data_dedup <- mp_combined_data %>%
+  distinct()
+
+# Write output
+write_csv(
+  mp_combined_data_dedup,
+  here("Meta", "Fern_General", "Movement_between_Places", "movement_between_places_aggregated.csv")
+)
+
+cat("Done. Aggregated file saved as movement_between_places_aggregated.csv\n")
+cat("Rows before dedupe:", nrow(mp_combined_data), "\n")
+cat("Rows after dedupe:", nrow(mp_combined_data_dedup), "\n")
+```
+## Summary Statistics
+```{r}
+analyze_dataset <- function(df) {
+  list(
+    missing = df %>%
+      summarise(across(everything(), ~mean(is.na(.)))),
+
+    numeric_summary = df %>%
+      summarise(across(where(is.numeric),
+                       list(mean = mean, sd = sd),
+                       na.rm = TRUE)),
+
+    n_rows = nrow(df),
+    n_cols = ncol(df)
+  )
+}
+
+analyze_dataset(ba_combined_data_dedup)
+analyze_dataset(mp_combined_data_dedup)
+```
+
+
+## Tennessee_Kentucky
+

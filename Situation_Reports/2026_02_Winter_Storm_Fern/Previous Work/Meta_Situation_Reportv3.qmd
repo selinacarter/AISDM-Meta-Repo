@@ -1,0 +1,1167 @@
+---
+title: "Winter Storm Fern Situation Report"
+subtitle: "January 2026"
+execute: 
+  warning: false
+  message: false
+  output: false
+  echo: false
+fig-pos: H
+bibliography: references.bib
+format:
+  pdf:
+    colorlinks: true
+    pdf-engine: xelatex
+    tbl-cap-location: bottom
+    include-in-header:
+      text: |
+        \usepackage{etoolbox}
+
+        \makeatletter
+        \patchcmd{\@makefntext}
+          {\parindent 1em}
+          {\parindent 1em\leftskip -0.5in\rightskip -0.5in}
+          {}{}
+        \makeatother
+---
+
+Formatted based on LA Fire [Situation Report](https://www.crisisready.io/wp-content/uploads/2025/01/ReadyMapper-LAFires-01152025.pdf)
+
+```{r}
+library(ggplot2)
+library(gt)
+library(scales)
+library(lubridate)
+library(ggmap)
+library(readr)
+library(patchwork)
+library (here)
+library(dplyr)
+library(sf)
+library(tigris)
+```
+
+```{r}
+# Get US county boundaries
+options(tigris_use_cache = TRUE)
+counties_sf <- counties(cb = TRUE, year = 2023) |>
+  st_transform(4326) |>
+  select(
+    county_state = STATE_NAME,
+    county_name = NAME,
+    county_geoid = GEOID,
+    geometry
+  )
+
+# State boundaries
+states_sf <- tigris::states(cb = TRUE, year = 2023) |>
+  st_transform(4326) |>
+  select(
+    state_name = NAME,
+    geometry
+  )
+library(tidyverse)
+library(sf)
+library(patchwork)  # For arranging plots
+library(scales)     # For squish
+
+make_percent_change_map <- function(file_name,
+                                    date_col = "ds",
+                                    value_col = "percent_change",
+                                    selected_date = NULL,
+                                    selected_hour = NULL,
+                                    output_plot_name = NULL,
+                                    title_prefix = "Population Density Change (%)") {
+  
+  # Read file
+  df <- read_csv(
+    here("outputs", file_name),
+    show_col_types = FALSE
+  )
+  
+  # Determine which dates to use
+  if (is.null(selected_date)) {
+    plot_dates <- max(df[[date_col]], na.rm = TRUE)
+  } else {
+    if (!all(selected_date %in% df[[date_col]])) {
+      stop("One or more selected_date values are not available in the data.")
+    }
+    plot_dates <- selected_date
+  }
+  
+ # Compute global fill range using the summarized county-level data
+  all_summarized <- df |>
+    filter(paste(.data[[date_col]], hour) %in% paste(plot_dates, selected_hour))
+  
+  fill_range <- all_summarized |>
+    summarise(min_val = min(percent_change, na.rm = TRUE),
+              max_val = max(percent_change, na.rm = TRUE))
+  
+  # Function to create a single map
+  create_map <- function(plot_date_time) {
+    latest_county <- df |>
+      filter(paste(.data[[date_col]], hour) %in% plot_date_time)
+    
+    map_data <- counties_sf |>
+      inner_join(latest_county, by = "county_geoid")
+    
+    county_bbox <- st_bbox(map_data)
+    relevant_states <- states_sf |>
+      st_filter(map_data, .predicate = st_intersects)
+    
+    plot_date <- gsub("0000", "12am PST",plot_date_time)
+    plot_date <- gsub("0800", "8am PST",plot_date)
+    plot_date <- gsub("1600", "4pm PST",plot_date)
+    
+    ggplot() +
+      geom_sf(data = map_data, aes(fill = percent_change), linewidth = 0.2) +
+      geom_sf(data = relevant_states, fill = NA, color = "black", linewidth = 0.7) +
+      scale_fill_gradientn(
+          colours = c("red", "white", "blue"),
+          values = scales::rescale(c(
+            fill_range$min_val,  # -5
+            0,
+            fill_range$max_val   # 75
+          )),
+          limits = c(fill_range$min_val, fill_range$max_val),
+          oob = squish,
+          labels = label_number(suffix = "%", accuracy = 1)
+        ) +
+      labs(
+        title = plot_date,
+        fill = "% Change vs Baseline"
+      ) +
+      coord_sf(
+        xlim = c(county_bbox["xmin"], county_bbox["xmax"]),
+        ylim = c(county_bbox["ymin"], county_bbox["ymax"])
+      ) +
+      theme_minimal()
+  }
+
+  # Create plots
+  
+  plots <- lapply(paste(plot_dates, selected_hour), create_map)
+  
+  # Combine plots side-by-side with shared legend
+  if (length(plots) == 1) {
+    combined_plot <- plots[[1]] +
+      ggtitle(paste(title_prefix, plots[[1]]$labels$title))
+  } else {
+    combined_plot <- wrap_plots(plots, ncol = length(plots), guides = "collect") &
+      theme(legend.position = "bottom")
+    
+    # Shared title
+    combined_plot <- combined_plot + plot_annotation(
+    title = title_prefix,
+    theme = theme(
+      plot.title = element_text(hjust = 0.5)  # centers the title
+    )
+  )
+  }
+  
+  # Save if requested
+  if (!is.null(output_plot_name)) {
+    ggsave(
+      filename = here("outputs", output_plot_name),
+      plot = combined_plot,
+      width = ifelse(length(plot_dates) == 2, 16, 10),
+      height = 7
+    )
+  }
+  
+  return(combined_plot)
+}
+```
+
+
+```{r}
+bing_vs_admin_map <- function(date_col = "ds",
+                                    value_col = "percent_change",
+                                    selected_date = NULL,
+                              selected_hour = NULL,
+                                    output_plot_name = NULL,
+                                    title_prefix = "Population Density Change (%)") {
+  
+  # Read file
+  df_bing <- read_csv(
+    here("outputs", "tk_facebook_pop_aggregated_bing.csv"),
+    show_col_types = FALSE
+  )
+  
+  df_admin <- read_csv(
+    here("outputs", "tk_facebook_pop_aggregated_admin.csv"),
+    show_col_types = FALSE
+  )
+  
+  # Determine which dates to use
+  # Combine first so date checks use all available data
+  common_cols <- intersect(names(df_bing), names(df_admin))
+  df_combined <- rbind(df_bing[, common_cols], df_admin[, common_cols])
+  
+  # Determine which dates to use
+  if (is.null(selected_date)) {
+    plot_dates <- max(df_combined[[date_col]], na.rm = TRUE)
+  } else {
+    if (!all(selected_date %in% df_combined[[date_col]])) {
+      stop("One or more selected_date values are not available in the data.")
+    }
+    plot_dates <- selected_date
+  }
+  
+ # Compute global fill range using the summarized county-level data
+  all_summarized <- df_combined |>
+    filter(.data[[date_col]] == plot_dates,
+             hour == selected_hour)
+  
+  fill_range <- all_summarized |>
+    summarise(min_val = min(percent_change, na.rm = TRUE),
+              max_val = max(percent_change, na.rm = TRUE))
+  
+  # Function to create a single map
+  create_map <- function(df, source, plot_date = plot_dates) {
+
+    latest_county <- df |>
+      filter(.data[[date_col]] == plot_date,
+             hour == selected_hour)
+  
+    map_data <- counties_sf |>
+      inner_join(latest_county, by = "county_geoid")
+  
+    county_bbox <- st_bbox(map_data)
+  
+    relevant_states <- states_sf |>
+      st_filter(map_data, .predicate = st_intersects)
+    time_hr <- case_when(
+      selected_hour == "0000" ~ "12am PST",
+      selected_hour == "8000" ~ "8am PST",
+      selected_hour == "1600" ~ "4pm PST",
+      .default = "")
+  
+    ggplot() +
+      geom_sf(
+        data = map_data,
+        aes(fill = percent_change),
+        linewidth = 0.2
+      ) +
+      geom_sf(
+        data = relevant_states,
+        fill = NA,
+        color = "black",
+        linewidth = 0.7
+      ) +
+      scale_fill_gradientn(
+          colours = c("red", "white", "blue"),
+          values = scales::rescale(c(
+            fill_range$min_val,  # -5
+            0,
+            fill_range$max_val   # 75
+          )),
+          limits = c(fill_range$min_val, fill_range$max_val),
+          oob = squish,
+          labels = label_number(suffix = "%", accuracy = 1)
+        )+
+      labs(
+        title = source,
+        subtitle = paste0(plot_date, " ",time_hr),
+        fill = "% Change vs Baseline"
+      ) +
+      coord_sf(
+        xlim = c(county_bbox["xmin"], county_bbox["xmax"]),
+        ylim = c(county_bbox["ymin"], county_bbox["ymax"])
+      ) +
+      theme_minimal()
+  }
+  
+  # Create plots
+  plots <- list(
+  create_map(df_bing, source = "Bing"),
+  create_map(df_admin, source = "Admin")
+)
+  
+  # Combine plots side-by-side with shared legend
+  if (length(plots) == 1) {
+    combined_plot <- plots[[1]] +
+      ggtitle(paste(title_prefix, plots[[1]]$labels$title))
+  } else {
+    combined_plot <- wrap_plots(plots, ncol = length(plots), guides = "collect") &
+      theme(legend.position = "bottom")
+    
+    # Shared title
+    combined_plot <- combined_plot + plot_annotation(
+    title = title_prefix,
+    theme = theme(
+      plot.title = element_text(hjust = 0.5)  # centers the title
+    )
+  )
+  }
+  
+  # Save if requested
+  if (!is.null(output_plot_name)) {
+    ggsave(
+      filename = here("outputs", output_plot_name),
+      plot = combined_plot,
+      width = ifelse(length(plot_dates) == 2, 16, 10),
+      height = 7
+    )
+  }
+  
+  return(combined_plot)
+}
+```
+
+
+# Summary
+
+A major American winter storm, often referred to as Winter Storm Fern, started on Friday, January 23rd 2026 and continued through January 26th 2026. The storm brought heavy snow and freezing rain to several U.S. states, ranging from the southern plains to the East Coast. Several states experienced network outages and extremely cold temperatures.  For example, temperatures in Seagull, Minnesota and in Iron County, Wisconsin hit lows of -43 degrees and -41 degrees Fahrenheit, respectively ([@weathercom_fern2026](https://weather.com/news/weather/news/2026-01-24-live-updates-winter-storm-fern-january-24)). Emergency declarations were issued [^emergency] ([@crs_in12644](https://www.congress.gov/crs-product/IN12644) ). Power outages due to downed trees and ice occurred in Southern States, such as Texas, Louisiana, Mississippi, and Tennessee. States from Maine to New Mexico experienced significant snowfall, and sleet occurred in the Mid-Atlantic and Northeast. As of January 29th, there were up to 115 fatalities across 20 states after this winter storm, and approximately 2.5 million customers experienced power outages across the United states ([@kothari2026winterstorm](https://watchers.news/2026/01/29/over-100-fatalities-confirmed-after-major-january-2026-u-s-winter-storm/)). Verisk, who are catastrophe risk modelling specialists, estimated 
+a total of US $4 billion in industry losses with 14 states, ranging from Massachusetts to Texas, that could each exceed \$50 million in insured losses ([@evans2026fern](https://www.artemis.bm/news/verisk-estimates-winter-storm-fern-insured-losses-could-reach-4bn/)).
+
+[^emergency]: including Arkansas, Georgia, Indiana, Kentucky, Louisiana, Maryland, Mississippi, North Carolina, South Carolina, Tennessee, Virginia, and West Virginia
+
+The following visualizations are developed based on Meta AI for Good's data through Facebook with a focus on Tennessee and Kentucky. The data covers population movement and population density change during the collection period of January 30 to February 12. These datasets use location activity from Facebook users or Facebook Business Pages to estimate how people, population density, network coverage, and business activity change during a crisis, so they do not represent the entire population in the area. Counts of people within a certain region are recorded at 8-hour intervals in this dataset. The counts during the crisis are compared to the counts at a baseline, which are the counts in the same region 45 days prior to data collection. These regions are either Bing tiles, what are about 6 x 6 city blocks, or administrative regions as determined by [GADM](https://gadm.org). These counts are aggregated to the county level for this analysis.
+
+The main findings suggest that population-density change during the post-storm period was geographically concentrated rather than evenly distributed across the region. The strongest positive changes (i.e. counties with a population influx at the time) were repeatedly observed in a small number of counties, especially Perry County, Alabama, Mississippi and Cleburne County Arkansas, while Sevier County, Tennessee showed one of the strongest and most persistent negative changes (i.e. counties with an average exodus occured at the time). Time-series results further suggest that the highest-change counties experienced sustained deviations from baseline, while average- and low-change counties generally stayed closer to zero with short-term fluctuations. However, the average- and low-change counties do have a substantial drop in population density chang on February 9th.
+
+
+# How the Data Are Constructed
+
+The Facebook data used in this report comes from Meta’s Data for Good crisis datasets. In plain terms, these datasets use location activity from Facebook users or Facebook business Pages to estimate how people, population density, network coverage, and business activity change during a crisis. The data does not represent everyone in the affected area. For population and movement datasets, it only represents Facebook app users who have Location Services enabled. For business activity, it represents qualifying Facebook business Pages with enough activity to be included while preserving privacy. 
+
+The data is constructed by comparing what is observed during the crisis period to what was typical before the crisis. For example, population density during the storm is compared to a pre-crisis baseline of 45-days prior to data collection. Movement during the storm is compared to normal movement patterns between the same places before the event. Business activity is compared to normal posting behavior from business pages before the crisis. Because the data is relative to a baseline, the main signal is not the raw count itself, but whether a place is above or below its pre-crisis level.
+
+
+Temporally, the population and movement datasets use fixed 8-hour windows. These windows begin at 00:00, 08:00, and 16:00 Pacific Time. This means that the time periods do not automatically adjust to local time zones. For Tennessee and Kentucky, the reported time windows are still based on Pacific Time, which should be kept in mind when interpreting daily patterns. Business activity is reported daily, based on the date value in the dataset. 
+
+Some Meta crisis datasets are provided directly as Bing tile data, while others are provided as administrative-region data. **For the rest of this report, we use the Bing tile version as the primary aggregation source because Bing tiles are strictly defined grid cells with clear latitude and longitude coordinates.** This makes the spatial assignment process more transparent and reproducible. In contrast, the administrative-region datasets are aggregated using boundaries provided to Meta by [GADM](https://gadm.org). Because we do not have direct access to the exact GADM polygons used by Meta for this aggregation, it is harder to verify or reproduce the administrative-region boundaries precisely.
+
+When the data is provided as Bing tiles, each observation is tied to a grid cell with a latitude and longitude. When we add county information to those data, we are not changing the original measurement. Instead, we assign each tile or point to the county that contains it. This allows the tile-level data to be summarized at the county level while preserving a clear record of how the geographic aggregation was performed.
+
+For example, a Bing tile located inside Davidson County, Tennessee would be assigned the Davidson County name and GEOID. If many Bing tiles fall within Davidson County, their values can then be averaged, summed, or otherwise summarized to produce a county-level measure. This approach gives us a consistent way to move from tile-level observations to county-level reporting while relying on publicly available county boundary data.
+
+
+# Facebook Data Definitions
+
+- **Baseline Ratio**: Ratio of people using the Facebook app who have turned on the Location Services device setting on their mobile device that are present in a specific tile during the baseline period over users in all tiles in the boundary box defining the crisis
+
+- **Crisis Ratio**: Ratio of people using the Facebook app who have turned on the Location Services device setting on their mobile device that are present in a specific tile during the 8-hour window over users in all tiles in the boundary box defining the crisis
+
+- **Population Change Density (%)**: Percent change in Facebook Location Services-enabled user population counts per tile, calculated by dividing the difference by the baseline (plus a small value, usually 1)
+
+- **Time Windows**: aggregated over 3 fixed 8-hour time windows, beginning at 00:00, 08:00 and 16:00, that represent changes in population density
+
+- **Bing Tiles**: Bing tiles divide the map into a grid of smaller spatial units. Each tile is identified by tile coordinates and a quadkey, which uniquely identifies a tile at a specific level of detail [@microsoft_bing_tile_system]. In the Meta crisis datasets used here, Bing tile level 14 is roughly 2.4 kilometers on each side near the equator, or approximately the size of 6 by 6 city blocks.
+
+- **Administrative Regions**: the polygon boundaries for administrative regions derived from the [Database of Global Administrative Areas](https://gadm.org), also known as GADM [@gadm].
+
+- **Percent change**: Percent change in population counts of Facebook app users who have turned on the Location Services device setting on their mobile device and are along the vector defined by the starting bing tile and ending bing tile, calculated by dividing the difference by the baseline (n_baseline) (plus a small value, usually 1).
+
+# Aggregation Choices
+## Imputation and County-Level Percent Change
+
+For the county-level analysis, this report does not use the original tile-level `percent_change` field as the final county-level measure. Instead, the original `percent_change` column is preserved as `given_percent_change`, and a new county-level `percent_change` is calculated from the underlying baseline and crisis counts.
+
+Some rows have missing values for `n_baseline` or `n_crisis` because of Meta’s privacy protections around small counts. To avoid dropping these rows entirely, missing `n_baseline` values are imputed as 3 and missing `n_crisis` values are imputed as 9.
+
+After imputation, observations are summarized by county and reporting window. Because the data may include multiple observations within a single day, the reporting window is defined using both the date and the time-window information available in the data. For each county-window pair, the baseline counts are summed across all Bing tile observations in that county and reporting window, and the crisis counts are summed across those same observations. The county-window percent change is then calculated as:
+
+$\text{PercentChange}_{cw} = \frac{n_{\text{crisis},cw} - n_{\text{baseline},cw}}{n_{\text{baseline},cw} + 1} \times 100$
+
+where $c$ is the county and $w$ is the reporting window. The small value added to the denominator follows the logic in the Meta documentation and prevents division by very small baseline values.
+
+This means the maps and tables  represent county-level population density change based on aggregated counts. 
+
+*The aggregation method depends on the type of variable being summarized. For count variables, such as `n_baseline` and `n_crisis`, summing is appropriate because the goal is to estimate the total observed Facebook users across tiles within a county. For relative variables, such as `given_percent_change`, or ratios, averaging can still be useful for descriptive comparisons, but these are not used as the main county-level percent change measure in this report.*
+
+For movement data, origin and destination counties are kept separate. Each row represents movement from one starting location to one ending location, so the analysis preserves both `start_county_geoid` and `end_county_geoid`. This avoids collapsing directional movement into a single county and allows county-to-county movement patterns to be analyzed more accurately.
+
+Bing tile observations are assigned to counties using the latitude and longitude coordinates of each tile centroid. The documentation defines these coordinates as the centers of the Bing tile grid cells. These centroid points are spatially joined to county polygons to assign county names and GEOIDs. Quadkeys identify the original Bing tiles, but they are not used directly for county assignment in this report.
+
+Geographically, the data is reported in two main ways: Bing tiles and administrative regions. Bing tiles divide space into small grid cells. At Bing tile level 14, each tile is roughly 2.4 kilometers on a side near the equator, or about the size of several city blocks. Administrative regions instead use boundaries such as counties, states, or other official geographic areas. These are two different approximations of the same general region and same time window, but they can show different rates of population density change (@fig-bing-vs-admin).
+
+```{r fig-bing-vs-admin, fig.cap = "Both maps display county-level summaries for the same region and time window. The bing tile data are aggregated up to counties using tile centroid locations, while the administrative-region data are already provided by Meta at an administrative boundary level.", output = T}
+bing_vs_admin_map(selected_date = "2026-02-12",
+                  selected_hour = "0000")
+```
+**Takeaways** (@fig-bing-vs-admin)
+
+- Bing tile results and administrative-region results should not be treated as interchangeable
+
+- The strongest changes appear concentrated in a small number of counties rather than spread evenly across the region
+
+- For example, on February 12th 4pm PST, the population density change for Issaquena, Mississippi is 21.29% based on Bing tiles and only -10.55% based on administrative regions.
+
+
+# Outside Data Added
+
+In addition to the Meta crisis datasets, county-level demographic data was added from the American Community Survey in 2022 [@acs]. This demographic data was incorporated with the use of the `tidycensus` package [@tidycensus]. This outside data provides context about the counties affected by the storm, including total population, median household income, poverty rate, share of residents age 65 and older, and share of households without vehicle access. These variables help interpret which communities may be more vulnerable during a crisis.
+
+The demographic data is joined using `county_geoid`, a standardized county identifier. This is important because county names alone are not unique across states. For example, many states have counties with the same name, but each county has a unique GEOID.
+
+
+
+# Limitations
+
+These datasets should be interpreted as indicators of crisis-related change, not exact measures of the full population. The population and movement data only include Facebook users with Location Services enabled, so the sample may not represent all residents equally. Areas with fewer Facebook users or lower Location Services usage may be less reliable.
+
+Privacy protections also affect interpretation. Small counts may be suppressed or removed, which can especially affect rural areas. For movement data, this means it is not reliable to calculate exact net flows by simply adding inbound and outbound movement, because some small movement vectors are excluded. 
+
+The baseline period is limited to the pre-crisis period available to Meta. This means the analysis does not have a long historical record of pre-crisis behavior. As a result, seasonal changes, holidays, or unusual pre-crisis conditions may affect the baseline. The data is useful for rapid situational awareness, but it should not be interpreted as a complete long-term population or economic dataset.
+
+Finally, the data is time-limited. The documentation notes that some datasets are accessible for 90 days after the final update day and then discarded, which limits longer-term reproducibility and longitudinal analysis.
+
+
+{{<pagebreak>}}
+
+# Movement
+
+## % Population Density Change
+
+
+```{r fig-pop-bing, fig.cap = "When showing population density change with Bing tiles, there is little negative changes at these two dates.", output = T}
+make_percent_change_map(
+  file_name = "tk_facebook_pop_aggregated_bing.csv",
+  selected_date = c("2026-02-02", "2026-02-12"),
+  selected_hour = c("0000", "1600"),
+  title_prefix = "Population Density Change (%) - Bing Tiles"
+)
+```
+
+**Takeaways** (@fig-pop-bing)
+
+- The overall spatial pattern appears fairly stable between the two dates
+
+- There is little visible negative population-density change.
+
+- On February 2nd 12am PST, the counties with the most increased population density are (@tbl-bing02-inc):
+
+  - Perry, Alabama (103.0%)
+  
+  - Cleburne, Arkansas (58.1%)
+  
+  - Hampton, South Carolina (57.4%)
+
+- On February 2nd, the counties with the most decreased population density are (@tbl-bing02-dec):
+
+  - Sevier, Tennessee (-22.8%)
+  
+  - Carroll, Ohio (-22.7%)
+  
+  - Swain, North Carolina (-12.4%)
+
+- On February 12th, the counties with the most increased population density are (@tbl-bing12-inc):
+
+  - Fairfield, South Carolina (31.3%)
+  
+  - Clay, West Virginia (26.2%)
+  
+  - Kemper, Mississippi (23.3%)
+  
+- On February 12th, the counties with the most decreased population density are (@tbl-bing12-dec):
+
+  - Sevier, Tenneessee (-21.7%)
+  
+  - Alleghany, North Carolina (-14.7%)
+  
+  - Laurens, Georgia (-11.8%)
+  
+## Time Series of Movement
+
+```{r}
+make_mini_map <- function(file_name,
+                                    counties,
+                                    output_plot_name = NULL,
+                                    title_prefix = "") {
+  
+  # Read file
+  df <- read_csv(
+    here("outputs", file_name),
+    show_col_types = FALSE
+  )
+  
+ # Compute global fill range using the summarized county-level data
+  counties_df <- df |>
+    mutate(color_county = ifelse(county_name_acs %in% counties,
+                                 county_name_acs, NA)) |>
+    select(county_geoid, county_name, county_state, color_county) |>
+    unique()
+  
+  # Function to create a single map
+  create_map <- function() {
+    map_data <- counties_sf |>
+      inner_join(counties_df, by = "county_geoid")
+    
+    county_bbox <- st_bbox(map_data)
+    relevant_states <- states_sf |>
+      st_filter(map_data, .predicate = st_intersects)
+    
+    ggplot() +
+      geom_sf(data = map_data, aes(fill = color_county), 
+              show.legend = FALSE, 
+              linewidth = 0.2) +
+      geom_sf(data = relevant_states, fill = NA, color = "black", linewidth = 0.7)+
+      scale_fill_discrete(
+        na.value = "white"
+      ) + 
+      labs(
+        fill = "% Change vs Baseline"
+      ) +
+      coord_sf(
+        xlim = c(county_bbox["xmin"], county_bbox["xmax"]),
+        ylim = c(county_bbox["ymin"], county_bbox["ymax"])
+      ) +
+      theme_minimal()
+  }
+  
+  create_map()
+}
+```
+
+
+
+```{r}
+tk_fb_data_bing <- read_csv(here("Outputs", "tk_facebook_pop_aggregated_bing.csv"), show_col_types = F) |>
+  mutate(county_name = gsub(" County", "", county_name_acs))
+# Summarize county-level movement/change intensity 
+# Have to decide between median and mean
+county_change_summary <- tk_fb_data_bing |>
+  mutate(ds = as.Date(ds)) |>
+  group_by(county_geoid, county_name, county_name_acs) |>
+  summarise(
+    avg_abs_change = mean(abs(percent_change), na.rm = TRUE),
+    max_abs_change = max(abs(percent_change), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Select counties with highest, lowest, and average change
+high_counties <- county_change_summary |>
+  slice_max(avg_abs_change, n = 3) |>
+  mutate(change_group = "Highest change")
+
+low_counties <- county_change_summary |>
+  slice_min(avg_abs_change, n = 3) |>
+  mutate(change_group = "Lowest change")
+
+average_value <- median(county_change_summary$avg_abs_change, na.rm = TRUE)
+
+average_counties <- county_change_summary |>
+  mutate(distance_from_average = abs(avg_abs_change - average_value)) |>
+  slice_min(distance_from_average, n = 3) |>
+  mutate(change_group = "Average change")
+```
+
+
+```{r}
+# TS Prep function
+make_county_time_data <- function(selected_counties) {
+  tk_fb_data_bing |>
+    mutate(ds = as.POSIXct(
+          paste(ds, hour),
+          format = "%Y-%m-%d %H%M",
+          tz = "America/Los_Angeles"
+        ))|>
+    inner_join(
+      selected_counties |> select(county_geoid, change_group),
+      by = "county_geoid"
+    )
+}
+
+# Plotting functions
+plot_county_time_series <- function(time_data, plot_title) {
+  ggplot(time_data, aes(x = ds, y = percent_change, color = county_name)) +
+    geom_hline(yintercept = 0, linewidth = 0.3) +
+    geom_line(linewidth = 0.7) +
+    geom_point(size = 1) +
+    scale_y_continuous(
+      labels = scales::label_number(suffix = "%", accuracy = 1)
+    ) +
+    labs(
+      title = plot_title,
+      x = NULL,
+      y = "% Change vs Baseline",
+      color = "County"
+    ) +
+    theme_minimal()
+}
+
+```
+The counties are grouped by average absolute population-density change over the recording period.[^avg-change]
+
+[^avg-change]: The percent changes are summarized over the full recording period for each county. For each county, the absolute value of the percent change is taken at each time point, and those absolute changes are averaged across the 14-day period. This creates a single measure of how much each county deviated from baseline, regardless of whether the change was positive or negative. Counties are then compared using this average absolute change to identify the highest-change, lowest-change, and average-change counties. The county-level change measure is defined as $\text{AvgAbsChange}_i = \frac{1}{T_i}\sum_{t=1}^{T_i} |p_{it}|$, where $p_{it}$ is the percent change for county $i$ at time $t$, and $T_i$ is the number of time periods observed for that county.
+
+```{r fig-TS-high, fig.cap = "The figure shows that “highest change” includes both large increases and large decreases when counties are selected using largest absolute average percent change in population density. The time period is February 2nd to February 13th at 8hr intervals at 12am PST, 8am PST, and 4pm PST.", output = T}
+high_time <- make_county_time_data(high_counties)
+
+plot_county_time_series(
+  high_time,
+  "% Population Density Change Over Time:\nHighest-Change Counties"
+)
+```
+
+```{r, output = T, fig.height = 3}
+make_mini_map(file_name = "tk_facebook_pop_aggregated_bing.csv",
+              counties = high_counties$county_name_acs)
+```
+
+
+**Takeaways** (@fig-TS-high)
+
+- The time series makes clear that the largest changes are persistent over multiple days, not just one-day spikes, but each county has starkly different patterns of population density change.
+
+- Monroe has very strong positive population density throughout this entire time period, which is at least double the population density rates of the other two counties.
+
+- Fairfield maintains strong positive population density change throughout this time period.
+
+- Issaquena tends to have peaks around the 8am PST time, which is 10am local time.
+
+```{r fig-TS-medium, fig.cap = "The three counties with average change have more variation in population density change with both positive and negative changes.", output = T}
+average_time <- make_county_time_data(average_counties)
+
+plot_county_time_series(
+  average_time,
+  "% Population Density Change Over Time:\nAverage-Change Counties"
+)
+```
+
+```{r, output = T, fig.height = 3}
+make_mini_map(file_name = "tk_facebook_pop_aggregated_bing.csv",
+              counties = average_counties$county_name_acs)
+```
+
+**Takeaways** (@fig-TS-medium)
+
+- These counties provide a useful comparison group for interpreting the more extreme counties.
+
+- In comparison to the high-change counties, these three counties have their percentage population density change constrained within [-10%, 10%], indicating much lower rates of population density change.
+
+- All counties have a drop in population density change at February 9th of similar magnitudes.
+
+- Fayette and Ohio follow similar trends in variation, but Ohio, Kentucky has a noticable spike on February 8th.
+
+- Union is the only county of these three that has negative population density rates in this time periods.
+
+```{r fig-TS-low, fig.cap = "The three counties with the lowest change have a notable drop into extreme negative population density change on February 9th.",  output = T}
+low_time <- make_county_time_data(low_counties)
+
+plot_county_time_series(
+  low_time,
+  "% Population Density Change Over Time:\nLowest-Change Counties"
+)
+```
+
+```{r, output = T, fig.height = 3}
+make_mini_map(file_name = "tk_facebook_pop_aggregated_bing.csv",
+              counties = low_counties$county_name_acs)
+```
+
+**Takeaways** (@fig-TS-low)
+
+- These three counties follow a similar pattern with relatively stable populations around zero and a sharp drop at February 9th.
+
+- These counties never have strong positive population density change, implying that populations may have either entered before this time period or left after this time period, because the constant negative change indicates people leaving these counties.
+
+{{<pagebreak>}}
+
+## Places
+
+```{r, output = T}
+#| label: tbl-summary-table
+#| tbl-cap: "The bottom 20 county-to-county crisis movement flows are all at zero or ten, likely due to data-collection thresholds for privacy concerns. Total crisis movement is the total (non-negative) number of people who have turned on the Location Services device setting on their mobile device for a given starting and ending county."
+
+tk_mp_data_bing <- read_csv(here("Outputs", "tk_movement_between_places_aggregated_bing.csv"),
+                             show_col_types = F)
+county_flows <- tk_mp_data_bing |>
+  mutate(start_county_name_acs = gsub(" County", "", start_county_name_acs),
+         end_county_name_acs = gsub(" County", "", end_county_name_acs)) |>
+  group_by(start_county_name_acs, end_county_name_acs) |>
+  summarise(
+    total_crisis_movement = sum(n_crisis, na.rm = TRUE),
+    #avg_z_score = mean(z_score, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(total_crisis_movement)
+
+county_flows |>
+  rename(`Starting County` = start_county_name_acs,
+         `Ending County` = end_county_name_acs, 
+         `Total Crisis Movement` = total_crisis_movement) |>
+  slice_head(n = 20) |>
+  gt() |>
+  tab_header(
+    title = "Bottom 20 county-to-county crisis movement flows",
+    subtitle = "Source: Bing Tiles"
+  )
+
+```
+**Takeaways** (@tbl-summary-table)
+
+- The table is more useful as a data-quality warning than as a substantive movement analysis.
+
+- Because movement vectors with small counts can be suppressed, these low-flow values should not be interpreted as exact zero movement.
+
+{{< pagebreak >}}
+
+# Demographic Profile
+
+```{r}
+
+make_demographics_table <- function(file_name, 
+                                    map_date = NULL,
+                                    map_hr = NULL,
+                                    date_col = "ds",
+                                    value_col = "percent_change",
+                                    n_counties = 15,
+                                    output_table_name = NULL,
+                                    table_title = "Demographic Profile of Most Impacted Counties", desc = T,
+                                    source) {
+  
+  # Read file from Outputs folder
+  df <- read_csv(
+    here("Outputs", file_name),
+    show_col_types = FALSE
+  )
+  
+  # Convert date column
+  df <- df |>
+    mutate("{date_col}" := as.Date(.data[[date_col]]))
+  
+  # Use latest date by default
+  if (is.null(map_date)) {
+    map_date <- max(df[[date_col]], na.rm = TRUE)
+  } else {
+    map_date <- as.Date(map_date)
+  }
+  
+  # Summarize to county level
+  county_demo <- df |>
+    filter(.data[[date_col]] == map_date,
+           hour == map_hr)
+  
+  # Create gt table
+  demo_table <- county_demo |>
+    select(
+      County = county_name,
+      State = county_state,
+      `Population Density Change` = percent_change,
+      `Total Population` = total_population,
+      `Median Household Income` = median_income,
+      `Poverty Rate` = poverty_rate,
+      `% Age 65+` = pct_age_65_plus,
+      `% No Vehicle Access` = pct_no_vehicle
+    )
+  demo_table <- arrange(demo_table, `Population Density Change`)
+  if (desc){
+    demo_table <- arrange(demo_table, desc(`Population Density Change`))
+  }
+  demo_table |>
+  head(n_counties) |>
+  gt() |>
+  tab_header(
+    title = table_title,
+    subtitle = paste0("Source: ", source)
+  ) |>
+  # Wrap columns
+  cols_width(
+    County ~ px(120),
+    State ~ px(120),
+    `Population Density Change` ~ px(70),
+    `Total Population` ~ px(70),
+    `Median Household Income` ~ px(70),
+    everything() ~ px(50)
+  ) |>
+  tab_options(
+    table.font.size = px(9),
+    heading.title.font.size = px(16),
+    heading.subtitle.font.size = px(9),
+    data_row.padding = px(25),
+    column_labels.padding = px(0),
+    table.width = pct(100)
+  ) |>
+  fmt_number(
+    columns = `Population Density Change`,
+    decimals = 1,
+    suffixing = FALSE
+  ) |>
+  fmt_number(
+    columns = `Total Population`,
+    decimals = 0,
+    use_seps = TRUE
+  ) |>
+  fmt_currency(
+    columns = `Median Household Income`,
+    currency = "USD",
+    decimals = 0
+  ) |>
+  fmt_percent(
+    columns = c(`Poverty Rate`, `% Age 65+`, `% No Vehicle Access`),
+    decimals = 1
+  ) |>
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) |>
+  opt_table_font(
+    font = list(
+      google_font("Roboto Condensed"),
+      default_fonts()
+    )
+  )
+}
+
+demographics_table_gt <- function(){
+  
+}
+```
+
+
+```{r, output = T}
+#| label: tbl-bing02-inc
+#| tbl-cap: "There are a few counties with high population density change but low total population. All demographic information comes from the American Community Survey in 2022. Population density change is the average of the Percent change in Facebook Location Services-enabled user population counts per Bing tile in each county."
+
+
+make_demographics_table(
+  file_name = "tk_facebook_pop_aggregated_bing.csv",
+  map_date = "2026-02-02",
+  map_hr = "0000",
+  n_counties = 15,
+  source = "Bing Tiles",
+  table_title = "Counties with Most Increased Population Density on 2026-02-02 12am PST"
+) 
+```
+
+```{r, output = T}
+#| label: tbl-bing02-dec
+#| tbl-cap: "Most of the counties with the lowest population density change have fairly high vehicular access. All demographic information comes from the American Community Survey in 2022. Population density change is the average of the Percent change in Facebook Location Services-enabled user population counts per Bing tile in each county."
+
+
+make_demographics_table(
+  file_name = "tk_facebook_pop_aggregated_bing.csv",
+  n_counties = 15,
+  map_date = "2026-02-02",
+  map_hr = "0000",
+  desc = F,
+  source = "Bing Tiles",
+  table_title = "Counties with Most Decreased Population Density on 2026-02-02 12am PST"
+) 
+```
+
+```{r, output = T}
+#| label: tbl-bing12-inc
+#| tbl-cap: "Issaquena has the highest population density but notably small population size. All demographic information comes from the American Community Survey in 2022. Population density change is the average of the Percent change in Facebook Location Services-enabled user population counts per Bing tile in each county."
+
+
+make_demographics_table(
+  file_name = "tk_facebook_pop_aggregated_bing.csv",
+  map_date = "2026-02-12",
+  map_hr = "1600",
+  n_counties = 15,
+  source = "Bing Tiles",
+  table_title = "Counties with Most Increased Population Density on 2026-02-12 4pm PST"
+) 
+```
+
+```{r, output = T}
+#| label: tbl-bing12-dec
+#| tbl-cap: "Similar to Feb 2nd, the counties with strong negative population density change also have high levels of vehicular access. All demographic information comes from the American Community Survey in 2022. Population density change is the average of the Percent change in Facebook Location Services-enabled user population counts per Bing tile in each county."
+
+
+make_demographics_table(
+  file_name = "tk_facebook_pop_aggregated_bing.csv",
+  n_counties = 15,
+  map_date = "2026-02-12",
+  map_hr = "1600",
+  desc = F,
+  source = "Bing Tiles",
+  table_title = "Counties with Most Decreased Population Density on 2026-02-12 4pm PST"
+  ) 
+```
+
+{{< pagebreak >}}
+
+## Demographic Correlations
+
+```{r}
+# Read file from Outputs folder
+  df <- read_csv(
+    here("Outputs", "tk_facebook_pop_aggregated_bing.csv"),
+    show_col_types = FALSE
+  )
+  
+  # Convert date column
+  county_demo <- df |>
+    mutate(ds = as.POSIXct(
+          paste(ds, hour),
+          format = "%Y-%m-%d %H%M",
+          tz = "America/Los_Angeles"
+        ))
+  
+  demo_table <- county_demo |>
+    select(
+      County = county_name,
+      State = county_state,
+      `Population Density Change` = percent_change,
+      `Total Population` = total_population,
+      `Median Household Income` = median_income,
+      `Poverty Rate` = poverty_rate,
+      `% Age 65+` = pct_age_65_plus,
+      `% No Vehicle Access` = pct_no_vehicle,
+      Day = ds
+    ) |>
+    mutate(Day = Day - as.POSIXct("2026-02-02 0000",
+          format = "%Y-%m-%d %H%M",
+          tz = "America/Los_Angeles"),
+          Day = Day/86400)
+```
+
+```{r fig-corr, fig.cap = "There does not seem to be strong linear correlations between population density change and the other demographic variables. Population density change is the percent change in Facebook Location Services-enabled user population counts per Bing tile in each county at 8-hour intervals. All demographic variables are already at the county level from the American Community Survey in 2022. Days are the 1st to 10th day of data collection, from Feb 2nd to Feb 12. These counties are from 15 Southern states.", fig.height=8, warning = F, output = T}
+
+vars <- c(
+  "Total Population",
+  "Median Household Income",
+  "Poverty Rate",
+  "% Age 65+",
+  "% No Vehicle Access"
+)
+
+# Create scatterplots with correlation in title
+plot_list <- lapply(vars, function(v) {
+
+  # Calculate correlation
+  corr <- cor(
+    demo_table[[v]],
+    demo_table$`Population Density Change`,
+    use = "complete.obs"
+  )
+
+  ggplot(demo_table, aes(
+    x = .data[[v]],
+    y = `Population Density Change`,
+    fill = Day
+  )) +
+    geom_point(
+      shape = 21,
+      size = 3,
+      alpha = 0.1,
+      color = "black"
+    ) +
+    scale_fill_gradient(
+      low = "orange",
+      high = "blue"
+    ) +
+    labs(
+      title = bquote(hat(rho) == .(round(corr, 2))),
+      x = v,
+      y = "Population Density Change"
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "bottom"
+    )
+})
+
+plot_list[[6]] <- patchwork::plot_spacer()
+
+# Combine with shared legend
+wrap_plots(plot_list, ncol = 2, guides = "collect") &
+  theme(
+    legend.position = "bottom"
+  )
+```
+
+
+```{r}
+make_imputation_summary_table <- function(file_name,
+                                          date_col = "ds",
+                                          selected_date = NULL,
+                                          selected_hour = NULL,
+                                          output_table_name = NULL,
+                                          table_title = "Imputation Summary",
+                                          output_dir = "Outputs") {
+  
+  # Read file from Outputs folder
+  df <- readr::read_csv(
+    here::here(output_dir, file_name),
+    show_col_types = FALSE
+  )
+  
+  # Make sure date is treated as Date
+  df <- df |>
+    dplyr::mutate("{date_col}" := as.Date(.data[[date_col]]))
+  
+  # Optional date filter
+  if (!is.null(selected_date)) {
+    selected_date <- as.Date(selected_date)
+    
+    df <- df |>
+      dplyr::filter(.data[[date_col]] %in% selected_date)
+  }
+  
+  # Optional hour filter
+  if (!is.null(selected_hour)) {
+    df <- df |>
+      dplyr::filter(hour %in% selected_hour)
+  }
+  
+  # Check required columns for count shares
+  required_count_cols <- c(
+    "n_baseline",
+    "n_crisis",
+    "n_baseline_imputed_amount",
+    "n_crisis_imputed_amount"
+  )
+  
+  missing_count_cols <- setdiff(required_count_cols, names(df))
+  
+  if (length(missing_count_cols) > 0) {
+    stop(
+      "Missing required count columns: ",
+      paste(missing_count_cols, collapse = ", "),
+      ". Re-run the loading QMD with imputation turned on."
+    )
+  }
+  
+  # If the data has already been aggregated to county-window level,
+  # use n_rows_aggregated and *_imputed_rows.
+  # Otherwise, fall back to row counts and binary imputation flags.
+  if ("n_rows_aggregated" %in% names(df)) {
+    total_tiles <- sum(df$n_rows_aggregated, na.rm = TRUE)
+  } else {
+    total_tiles <- nrow(df)
+  }
+  
+  if ("n_baseline_imputed_rows" %in% names(df)) {
+    baseline_imputed_tiles <- sum(df$n_baseline_imputed_rows, na.rm = TRUE)
+  } else if ("n_baseline_imputed" %in% names(df)) {
+    baseline_imputed_tiles <- sum(df$n_baseline_imputed, na.rm = TRUE)
+  } else {
+    stop("Missing n_baseline_imputed_rows or n_baseline_imputed.")
+  }
+  
+  if ("n_crisis_imputed_rows" %in% names(df)) {
+    crisis_imputed_tiles <- sum(df$n_crisis_imputed_rows, na.rm = TRUE)
+  } else if ("n_crisis_imputed" %in% names(df)) {
+    crisis_imputed_tiles <- sum(df$n_crisis_imputed, na.rm = TRUE)
+  } else {
+    stop("Missing n_crisis_imputed_rows or n_crisis_imputed.")
+  }
+  
+  # Summarize counts and imputed shares
+  imputation_summary <- tibble::tibble(
+    Count = c("Baseline", "Crisis"),
+    `Total Count` = c(
+      sum(df$n_baseline, na.rm = TRUE),
+      sum(df$n_crisis, na.rm = TRUE)
+    ),
+    `Imputed Count` = c(
+      sum(df$n_baseline_imputed_amount, na.rm = TRUE),
+      sum(df$n_crisis_imputed_amount, na.rm = TRUE)
+    ),
+    `Imputed Bing Tiles` = c(
+      baseline_imputed_tiles,
+      crisis_imputed_tiles
+    ),
+    `Total Bing Tiles` = c(
+      total_tiles,
+      total_tiles
+    )
+  ) |>
+    dplyr::mutate(
+      `Observed Count` = `Total Count` - `Imputed Count`,
+      `Share of Count Imputed` = `Imputed Count` / `Total Count`,
+      `Share of Bing Tiles Imputed` = `Imputed Bing Tiles` / `Total Bing Tiles`
+    ) |>
+    dplyr::select(
+      Count,
+      `Total Count`,
+      `Observed Count`,
+      `Imputed Count`,
+      `Share of Count Imputed`,
+      `Total Bing Tiles`,
+      `Imputed Bing Tiles`,
+      `Share of Bing Tiles Imputed`
+    )
+  
+  # Subtitle based on filters
+  subtitle_text <- dplyr::case_when(
+    !is.null(selected_date) & !is.null(selected_hour) ~ paste(
+      "Filtered to",
+      paste(selected_date, collapse = ", "),
+      "and hour(s)",
+      paste(selected_hour, collapse = ", ")
+    ),
+    !is.null(selected_date) ~ paste(
+      "Filtered to",
+      paste(selected_date, collapse = ", ")
+    ),
+    !is.null(selected_hour) ~ paste(
+      "Filtered to hour(s)",
+      paste(selected_hour, collapse = ", ")
+    ),
+    TRUE ~ "All available dates and hours"
+  )
+  
+  # Build gt table
+  imputation_table <- imputation_summary |>
+    gt::gt() |>
+    gt::tab_header(
+      title = table_title,
+      subtitle = subtitle_text
+    ) |>
+    gt::fmt_number(
+      columns = c(
+        `Total Count`,
+        `Observed Count`,
+        `Imputed Count`,
+        `Total Bing Tiles`,
+        `Imputed Bing Tiles`
+      ),
+      decimals = 0,
+      use_seps = TRUE
+    ) |>
+    gt::fmt_percent(
+      columns = c(
+        `Share of Count Imputed`,
+        `Share of Bing Tiles Imputed`
+      ),
+      decimals = 1
+    ) |>
+    gt::cols_align(
+      align = "center",
+      columns = everything()
+    ) |>
+    tab_options(
+      table.font.size = px(9),
+      heading.title.font.size = px(16),
+      heading.subtitle.font.size = px(9),
+      data_row.padding = px(5),
+      column_labels.padding = px(0),
+      table.width = pct(100)
+    ) |>
+    cols_width(
+      everything() ~ px(70)
+    )
+  
+  # Save if requested
+  if (!is.null(output_table_name)) {
+    gt::gtsave(
+      imputation_table,
+      here::here(output_dir, output_table_name)
+    )
+  }
+  
+  return(imputation_table)
+}
+```
+
+
+```{r, output = TRUE}
+#| label: tbl-imputation-summary-window
+#| tbl-cap: "Share of total baseline and crisis counts and Bing tile observations that come from imputed values for the selected reporting window."
+
+make_imputation_summary_table(
+  file_name = "tk_facebook_pop_aggregated_bing.csv"
+)
+```
+
+
+{{< pagebreak >}}
+
+# References

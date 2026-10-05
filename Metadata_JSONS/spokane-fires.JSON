@@ -1,0 +1,22 @@
+{
+  "general_info": {
+    "disaster_name": "Spokane Fires",
+    "country": "USA",
+    "disaster_start_date": "2026-08-01",
+    "data_start_date": "2026-08-03",
+    "data_end_date": "2026-08-15",
+    "disaster_type": "wildfire",
+    "available_data": [
+      "Population",
+      "Movement",
+      "Business Activity",
+      "Network Coverage"
+    ],
+    "report_exists": true,
+    "interactive_version_exists": false,
+    "report_complete": true,
+    "interactive_version_complete": false 
+  },
+  "miscellaneous": {
+  }
+}

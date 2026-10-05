@@ -1,0 +1,22 @@
+{
+  "general_info": {
+    "disaster_name": "Winter Storm Fern",
+    "country": "USA",
+    "disaster_start_date": "2026-01-23",
+    "data_start_date": "2026-02-02",
+    "data_end_date": "2026-02-12",
+    "disaster_type": "storm",
+    "available_data": [
+      "Population",
+      "Movement",
+      "Business Activity",
+      "Network Coverage"
+    ],
+    "report_exists": true,
+    "interactive_version_exists": true,
+    "report_complete": true,
+    "interactive_version_complete": true 
+  },
+  "miscellaneous": {
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "general_info": {
+    "disaster_name": "",
+    "country": "",
+    "disaster_start_date": "",
+    "data_start_date": "",
+    "data_end_date": "",
+    "disaster_type": "",
+    "available_data": [
+      "Population",
+      "Movement",
+      "Business Activity",
+      "Network Coverage"
+    ],
+    "report_exists": false,
+    "interactive_version_exists": false,
+    "report_complete": false,
+    "interactive_version_complete": false 
+  },
+  "miscellaneous": {
+  }
+}

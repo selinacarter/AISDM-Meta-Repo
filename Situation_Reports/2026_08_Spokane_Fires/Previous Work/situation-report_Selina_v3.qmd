@@ -1,0 +1,182 @@
+---
+title: "Spokane Fires Situation Report"
+subtitle: "Date of Preparation: August 7, 2026"
+author:
+  - name: "Nikita Jayaprakash"
+  - name: "Selina Carter"
+  - name: "Samsara Foubert"
+thanks: "This report was prepared as part of the partnership between Carnegie Mellon University and Meta's AI for Good."
+
+execute: 
+  warning: false
+  message: false
+  output: false
+  echo: false
+
+fig-pos: H
+bibliography: references.bib
+format:
+  pdf:
+    colorlinks: true
+    pdf-engine: xelatex
+    tbl-cap-location: bottom
+    geometry:
+      - margin=0.75in
+    include-in-header:
+      text: |
+        \usepackage{etoolbox}
+        \usepackage{fancyhdr}
+
+        \makeatletter
+        \patchcmd{\@makefntext}
+          {\parindent 1em}
+          {\parindent 1em\leftskip -0.5in\rightskip -0.5in}
+          {}{}
+        \makeatother
+
+        \pagestyle{fancy}
+        \fancyhf{}
+        \fancyfoot[R]{\thepage}
+        \renewcommand{\headrulewidth}{0pt}
+        \renewcommand{\footrulewidth}{0pt}
+---
+# Disaster Manager Brief - Spokane Fires in Washington
+
+## Overview
+
+```{r, warning = F, echo = F}
+library(tidyverse)
+library(sf)
+library(lubridate)
+library(gganimate)
+library(ggforce)
+library(ggspatial)
+library(maptiles)
+library(quadkeyr)
+library(prettymapr)
+library(patchwork)
+#setwd("C:/Users/selin/Dropbox/CMU/Meta_AI_good/fire")
+source("1_data_cleaning_Selina.R")
+```
+
+Summary here...
+[SAMSARA]
+
+@watchduty_112554
+
+## Additional Info
+
+[SAMSARA]
+
+@spokane_evac_lookup
+
+## Data description
+
+
+The Facebook data used in this report comes from Meta’s Data for Good crisis datasets. In plain terms, these datasets use location activity from Facebook users to estimate how population shifts during a crisis. The data does not represent everyone in the affected area: it only represents **Facebook app users** who have **"Location Services" enabled**. Henceforth, we refer to this group simply as ["users"]{.underline}.
+
+
+There are two levels of granularity, time windows and geographic tiles:
+
+* Temporally, the data use fixed 8-hour windows. These windows begin at 00:00, 08:00, and 16:00 Pacific Time (PST).
+* Geographically, the data are aggregated into "Bing tiles" (level 14), which are roughly 1.5 x 1.5-mile squares. 
+
+The number of user are totaled by time and Bing tile. But, for privacy purposes, any time-tile combination with fewer than 11 users is treated as missing. 
+
+
+The data show two primary signals:
+
+1. **Comparison to pre-crisis level**:  For both raw user count and movements, we can compare these numbers to a pre-crisis baseline of 90-days prior to data collection during the same time window. This allows us to look at what was "typical" before the crisis.
+
+2. **Raw user count**: how many users are in a particular area at time window T.
+
+
+## 1. Comparison to pre-crisis level
+
+The following table compares the "typical" number of users in a Bing tile in the immediate crisis period (Aug 3, 12am PDT) compared to the baseline period (Jun 21, 12am PDT). Notably, most statistics are very similar. This indicates that *most* user behavior is not substantially different between the two periods. 
+
+```{r tbl-pop-stats, output = T, fig.cap = "Some summary statistics of number of users at crisis and at baseline to show the spread of how many people are in a Bing tile in this area."}
+lon_limits = c(-118.5, -115.5)
+lat_limits = c(47, 49)
+first_day <- fb_data_bing |>
+    filter(ds == "2026-08-03", hour == "0000") |>
+    filter(between(latitude, lat_limits[1], lat_limits[2])) |>
+    filter(between(longitude, lon_limits[1], lon_limits[2]))
+
+result <- tibble(
+  `Number of Users` = c("Crisis (Aug 3, 12am PDT)", "Baseline (Jun 21, 12am PDT)"),
+  Min = c(min(first_day$n_crisis, na.rm = TRUE), min(first_day$n_baseline, na.rm = TRUE)),
+  Average = c(mean(first_day$n_crisis, na.rm = TRUE), mean(first_day$n_baseline, na.rm = TRUE)),
+  Median = c(median(first_day$n_crisis, na.rm = TRUE), median(first_day$n_baseline, na.rm = TRUE)),
+  Max = c(max(first_day$n_crisis, na.rm = TRUE), max(first_day$n_baseline, na.rm = TRUE))
+)
+
+gt::gt(result)
+```
+However, there are notable outliers: in a small collection of Bing tiles, there are large *differences* in user counts. The following histogram describes the differences in Bing tile user count, where we define difference = # Users during Crisis (Aug 3rd 12am PDT) - # Users at Baseline (Jun 21 12am PDT). Positive numbers mean there were more users in a Bing tile during the crisis than during baseline, while negative numbers mean there were fewer users during the crisis.
+
+Out of `r length(first_day$n_difference)` Bing tiles, `r sum(first_day$n_difference<= -50, na.rm=T)` had a difference $\le -50$ (meaning people are leaving these tiles in the crisis period). This corresponds to a geographic area of roughly `r round(sum(first_day$n_difference<= -50, na.rm=T)*1.5*1.5,0)` square miles. In the other direction, `r sum(first_day$n_difference>= 50, na.rm=T)` had a difference $\ge 50$ (meaning people are entering these tiles in the crisis period). This corresponds to a geographic area of roughly `r round(sum(first_day$n_difference>= 50, na.rm=T)*1.5*1.5,0)` square miles.
+
+
+```{r fig-side-by-side, output = T, fig.cap = "Description here", message = F, warning = F}
+
+first_day |>
+  ggplot() +
+  geom_histogram(aes(x = n_difference)) +theme_bw() +
+  xlab("Difference between baseline and crisis") +
+  ylab("Count") +
+  ggtitle("Comparison of # Users during Crisis (Aug 3rd 12am PDT) \n -# Users at Baseline (Jun 21 12am PDT)")
+  
+```
+
+In the following map, we plot the difference in the number of users in each tile during the crisis (August 3, 12am PDT) compared to a 90-day baseline at the same hour (June 21, 12am PDT). We have also plotted the fire perimeters in dark red outline based on @wfigs_current_api. Note that August 3, 12am PDT is the earliest available data, while the fires start on [SAMSARA].
+
+The map shows that the areas corresponding to exodus (blue) are sandwiched between the Autumn Lane Fire and the Old Trails Fire. The areas corresponding to influx (red) are in urban centers of Spokane.
+
+```{r fig-pop-zoomed, output = T, fig.cap = "Red means more people than normal, so people have likely moved to those areas due to crisis. Blue means less people than normal, so people have moved away from these areas likely due to crisis. Darker grey is NA, and lighter grey is similar populations during crisis and at 90-day baseline.", fig.height = 7, fig.width = 7}
+population_plot_n_difference(
+  "2026-08-03", "0000",
+  lon_limits = c(-118.5, -115.5),
+  lat_limits = c(47, 49)
+)
+```
+
+The following map shows the difference in number of users using the *latest available data* of the crisis period (Aug 6, 4pm PDT).  Again, the purpose of the plot is show the difference in number of users in the area during the crisis (August 6, 4pn PDT) compared to a 90-day baseline at the same hour (June 21, 4pm PDT). The fire perimeters are in dark red outline based on @wfigs_current_api. 
+
+We notice that the blue (exodus) regions are still dark, but the red (influx) regions have lessened in intensity compared to the previous August 3rd plot. This could be because people are escaping the city itself as the crisis progresses rather than remaining in downtown and other urban centers to escape the fire.
+
+
+```{r fig-pop-latest, output = T, fig.cap = "Red means more people than normal, so people have likely moved to those areas due to crisis. Blue means less people than normal, so people have moved away from these areas likely due to crisis. Darker grey is NA, and lighter grey is similar populations during crisis and at 90-day baseline.", fig.height = 7, fig.width = 7}
+population_plot_n_difference(
+  "2026-08-06", "1600",
+  lon_limits = c(-118.5, -115.5),
+  lat_limits = c(47, 49)
+) 
+```
+
+
+## 2. Raw User Counts
+
+The following maps show the **raw number of users** in a particular area (Bing tile) at time window T. Red means more users and blue means fewer users.
+
+In the first map (Aug 3, 12 am PDT), We can see that the red areas are concentrated in the urban centers of Spokane. Almost no users are near the Autumn Lane Fire. There were still users near the northeast corner of the Old Trails Fire and near the Fairview Fire.
+
+```{r fig-user-first, output = T, fig.cap = "These maps show the raw number of users in a particular area (Bing tile) at time window T. Red means more users and blue means fewer users.", fig.height = 7, fig.width = 7}
+population_plot_n_crisis(
+  "2026-08-03", "0000",
+  lon_limits = c(-118.5, -115.5),
+  lat_limits = c(47, 49)
+)
+```
+
+In the second map (Aug 6, 4pm PDT), we can see that the red areas are still concentrated in the urban centers of Spokane. Almost no users were near the Autumn Lane Fire. But, there were still users spread throughout the Old Trails Fire and the Fairview Fire.
+
+```{r fig-user-latest, output = T, fig.cap = "These maps show the raw number of users in a particular area (Bing tile) at time window T. Red means more users and blue means fewer users.", fig.height = 7, fig.width = 7}
+population_plot_n_crisis(
+  "2026-08-06", "1600",
+  lon_limits = c(-118.5, -115.5),
+  lat_limits = c(47, 49)
+)
+```
+
+## References

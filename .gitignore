@@ -1,0 +1,36 @@
+# Data
+data/
+Data/
+
+# Ignore all CSV, Excel, and JSON files anywhere
+*.csv
+*.xlsx
+*.json
+
+# Outputs
+outputs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+
+.vscode
+.Rproj.user
+.Rhistory
+
+Outputs/
+*.xlsx
+*.csv
+*.json
+
+
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata

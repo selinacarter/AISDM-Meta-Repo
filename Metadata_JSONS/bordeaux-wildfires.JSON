@@ -1,0 +1,22 @@
+{
+  "general_info": {
+    "disaster_name": "Bordeaux Fires",
+    "country": "France",
+    "disaster_start_date": "2026-07-22",
+    "data_start_date": "2026-07-27",
+    "data_end_date": "2026-08-10",
+    "disaster_type": "wildfire",
+    "available_data": [
+      "Population",
+      "Movement",
+      "Business Activity",
+      "Network Coverage"
+    ],
+    "report_exists": true,
+    "interactive_version_exists": false,
+    "report_complete": false,
+    "interactive_version_complete": false 
+  },
+  "miscellaneous": {
+  }
+}

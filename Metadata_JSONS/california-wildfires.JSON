@@ -1,0 +1,21 @@
+{
+  "general_info": {
+    "disaster_name": "California Wildfires",
+    "country": "USA",
+    "disaster_start_date": "2026-05-19",
+    "data_start_date": "2026-05-19",
+    "data_end_date": "2026-06-02",
+    "disaster_type": "wildfire",
+    "available_data": [
+      "Population",
+      "Business Activity",
+      "Network Coverage"
+    ],
+    "report_exists": true,
+    "interactive_version_exists": true,
+    "report_complete": false,
+    "interactive_version_complete": false 
+  },
+  "miscellaneous": {
+  }
+}

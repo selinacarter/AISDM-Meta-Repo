@@ -1,0 +1,664 @@
+---
+title: "Winter Storm Fern Situation Report - January 2026"
+execute: 
+  warning: false
+  message: false
+  output: false
+  echo: false
+fig-pos: H
+format:
+  pdf:
+    colorlinks: true
+    pdf-engine: xelatex
+---
+
+# FUNCTIONS
+
+## Imputation
+```{r}
+# Convert possible "\N" values to proper numeric NA values
+clean_numeric <- function(x) {
+  suppressWarnings(as.numeric(na_if(as.character(x), "\\N")))
+}
+
+# Impute missing n_baseline and n_crisis values
+impute_count_values <- function(df,
+                                baseline_impute_value = 3,
+                                crisis_impute_value = 9) {
+  
+  # Only run this function if the needed columns exist
+  required_cols <- c("n_baseline", "n_crisis")
+  
+  if (!all(required_cols %in% names(df))) {
+    stop("n_baseline and n_crisis must both exist before imputation.")
+  }
+  
+  # Rename Meta's original percent_change so we preserve it
+  if ("percent_change" %in% names(df) && !"given_percent_change" %in% names(df)) {
+    df <- df |>
+      rename(given_percent_change = percent_change)
+  }
+  
+  df |>
+    mutate(
+      # Clean count columns in case they were read as characters
+      n_baseline = clean_numeric(n_baseline),
+      n_crisis = clean_numeric(n_crisis),
+      
+      # Binary indicators: 1 means the value was imputed
+      # L means treat this number as an integer
+      n_baseline_imputed = if_else(is.na(n_baseline), 1L, 0L),
+      n_crisis_imputed = if_else(is.na(n_crisis), 1L, 0L),
+      
+      # Store the amount contributed by imputation
+      n_baseline_imputed_amount = if_else(n_baseline_imputed == 1L, baseline_impute_value, 0),
+      n_crisis_imputed_amount = if_else(n_crisis_imputed == 1L, crisis_impute_value, 0),
+      
+      # Impute missing values
+      n_baseline = if_else(is.na(n_baseline), baseline_impute_value, n_baseline),
+      n_crisis = if_else(is.na(n_crisis), crisis_impute_value, n_crisis)
+    )
+}
+
+# Calculate county-level percent change from summed n_baseline and n_crisis
+calculate_county_percent_change <- function(df,
+                                            group_cols = c("county_geoid", "county_name", "county_state", "ds"),
+                                            small_value = 1) {
+  
+  required_cols <- c(group_cols, "n_baseline", "n_crisis",
+                     "n_baseline_imputed", "n_crisis_imputed",
+                     "n_baseline_imputed_amount", "n_crisis_imputed_amount")
+  
+  missing_cols <- setdiff(required_cols, names(df))
+  
+  if (length(missing_cols) > 0) {
+    stop("Missing required columns for county-level percent change: ",
+         paste(missing_cols, collapse = ", "))
+  }
+  
+  df |>
+    group_by(across(all_of(group_cols))) |>
+    summarise(
+      # Sum counts to the county-date level
+      n_baseline = sum(n_baseline, na.rm = TRUE),
+      n_crisis = sum(n_crisis, na.rm = TRUE),
+      
+      # Difference in imputed crisis and baseline counts
+      n_difference = n_crisis - n_baseline,
+      
+      # Keep a summary of Meta's original percent_change for comparison
+      given_percent_change = if ("given_percent_change" %in% names(df)) {
+        mean(given_percent_change, na.rm = TRUE)
+      } else {
+        NA_real_
+      },
+      
+      # Binary county-level flags: 1 if any row in the county-date group was imputed
+      n_baseline_imputed = as.integer(any(n_baseline_imputed == 1L, na.rm = TRUE)),
+      n_crisis_imputed = as.integer(any(n_crisis_imputed == 1L, na.rm = TRUE)),
+      
+      # Number of rows imputed
+      n_baseline_imputed_rows = sum(n_baseline_imputed, na.rm = TRUE),
+      n_crisis_imputed_rows = sum(n_crisis_imputed, na.rm = TRUE),
+      
+      # Total amount of the county counts that came from imputation
+      n_baseline_imputed_amount = sum(n_baseline_imputed_amount, na.rm = TRUE),
+      n_crisis_imputed_amount = sum(n_crisis_imputed_amount, na.rm = TRUE),
+      
+      # Share of total county counts that came from imputation
+      pct_n_baseline_imputed = n_baseline_imputed_amount / n_baseline,
+      pct_n_crisis_imputed = n_crisis_imputed_amount / n_crisis,
+      
+      # Number of original rows aggregated into this county-date row
+      n_rows_aggregated = n(),
+      
+      .groups = "drop"
+    ) |>
+    mutate(
+      # New county-level percent change
+      percent_change = ((n_crisis - n_baseline) / (n_baseline + small_value)) * 100
+    )
+}
+```
+
+
+## Latitude and Longitude
+
+```{r}
+
+# Assign coordinates to counties
+
+# convert latitude/longitude points into sf objects, then join them to county polygons
+library(sf)
+library(dplyr)
+library(tigris)
+library(readr)
+library(here)
+
+options(tigris_use_cache = TRUE)
+
+# Get US county boundaries
+counties_sf <- counties(cb = TRUE, year = 2023) |>
+  st_transform(4326) |>
+  select(
+    county_state = STATE_NAME,
+    county_name = NAME,
+    county_geoid = GEOID,
+    geometry
+  )
+
+
+add_county_from_coords <- function(df, lat_col, lon_col, prefix = "") {
+  
+  points_sf <- df |>
+    filter(!is.na(.data[[lat_col]]), !is.na(.data[[lon_col]])) |>
+    st_as_sf(
+      coords = c(lon_col, lat_col),
+      crs = 4326,
+      remove = FALSE
+    )
+  
+  joined <- st_join(points_sf, counties_sf, join = st_within)
+  
+  joined |>
+    st_drop_geometry() |>
+    rename(
+      "{prefix}county_state" := county_state,
+      "{prefix}county_name" := county_name,
+      "{prefix}county_geoid" := county_geoid
+    )
+}
+```
+
+## Aggregate CSVs
+
+```{r}
+aggregate_csvs <- function(path_parts,
+                           output_name = "aggregated.csv",
+                           dedupe = TRUE,
+                           lat_col = NULL,
+                           lon_col = NULL,
+                           prefix = "",
+                           impute_counts = FALSE,
+                           calculate_county_change = FALSE,
+                           county_group_cols = c("county_geoid", "county_name", "county_state", "ds")) {
+  
+  data_dir <- do.call(here::here, as.list(path_parts))
+  
+  cat("Reading from:", data_dir, "\n")
+  
+  if (!dir.exists(data_dir)) {
+    stop("Directory does not exist: ", data_dir)
+  }
+  
+  csv_files <- list.files(
+    path = data_dir,
+    pattern = "\\.csv$",
+    full.names = TRUE
+  )
+  
+  if (length(csv_files) == 0) {
+    stop("No CSV files found in: ", data_dir)
+  }
+  
+  cat("Found", length(csv_files), "files\n")
+  
+  combined_data <- lapply(csv_files, function(f) {
+    read_csv(f, show_col_types = FALSE) |>
+      mutate(source_file = basename(f))
+  }) |>
+    bind_rows()
+  
+  if (dedupe) {
+    combined_data <- combined_data |> distinct()
+  }
+  
+  # Add counties from lat/lon if provided
+  if (!is.null(lat_col) && !is.null(lon_col)) {
+    cat("Adding county identifiers...\n")
+    
+    combined_data <- add_county_from_coords(
+      df = combined_data,
+      lat_col = lat_col,
+      lon_col = lon_col,
+      prefix = prefix
+    )
+  }
+  
+  # Extract date and time from file names
+  combined_data <- combined_data |>
+    mutate(
+      ds = as.Date(sub(".*_(\\d{4}-\\d{2}-\\d{2})_.*", "\\1", source_file)),
+      hour = sub(".*_(\\d{4}-\\d{2}-\\d{2})_(\\d{4}).*", "\\2", source_file)
+    )
+  
+  # Impute count columns if requested
+  if (impute_counts) {
+    cat("Imputing n_baseline and n_crisis...\n")
+    
+    combined_data <- impute_count_values(combined_data)
+  }
+  
+  # Aggregate to county-date level and calculate new percent_change if requested
+  if (calculate_county_change) {
+    cat("Calculating county-level percent_change from n_baseline and n_crisis...\n")
+    
+    combined_data <- calculate_county_percent_change(
+      df = combined_data,
+      group_cols = county_group_cols
+    )
+  }
+  
+  output_dir <- here::here("Outputs")
+  
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+  
+  output_file <- file.path(output_dir, output_name)
+  
+  write_csv(combined_data, output_file)
+  
+  cat("Saved to:", output_file, "\n")
+  cat("Rows:", nrow(combined_data), "\n")
+  
+  return(combined_data)
+}
+```
+
+## Fast Aggregate Counties
+
+```{r}
+add_movement_counties_fast <- function(df,
+                                       start_lat = "start_latitude",
+                                       start_lon = "start_longitude",
+                                       end_lat = "end_latitude",
+                                       end_lon = "end_longitude") {
+  
+  # County lookup for unique origin coordinates only
+  start_lookup <- df %>%
+    distinct(
+      .data[[start_lat]],
+      .data[[start_lon]]
+    ) %>%
+    add_county_from_coords(
+      lat_col = start_lat,
+      lon_col = start_lon,
+      prefix = "start_"
+    )
+  
+  # Join origin county fields back to full data
+  df <- df %>%
+    left_join(
+      start_lookup,
+      by = setNames(c(start_lat, start_lon), c(start_lat, start_lon))
+    )
+  
+  # County lookup for unique destination coordinates only
+  end_lookup <- df %>%
+    distinct(
+      .data[[end_lat]],
+      .data[[end_lon]]
+    ) %>%
+    add_county_from_coords(
+      lat_col = end_lat,
+      lon_col = end_lon,
+      prefix = "end_"
+    )
+  
+  # Join destination county fields back to full data
+  df <- df %>%
+    left_join(
+      end_lookup,
+      by = setNames(c(end_lat, end_lon), c(end_lat, end_lon))
+    )
+  
+  return(df)
+}
+```
+
+## Summary Statistics
+
+```{r}
+analyze_dataset <- function(df) {
+  list(
+    missing = df |>
+      summarise(across(everything(), ~mean(is.na(.)))),
+
+    numeric_summary = df |>
+      summarise(across(where(is.numeric),
+                       list(mean = mean, sd = sd),
+                       na.rm = TRUE)),
+
+    n_rows = nrow(df),
+    n_cols = ncol(df)
+  )
+}
+```
+
+## Demographics
+
+Request [API key here](https://api.census.gov/data/key_signup.html)
+
+```{r}
+library(tidycensus)
+
+# You only need to run this once if you have not already set a Census API key
+#census_api_key("insert_your_census_key", install = TRUE, overwrite = TRUE)
+
+# Pull county-level ACS demographics
+get_county_demographics <- function(year = 2022) {
+  
+  demo_vars <- c(
+    total_population = "B01003_001",
+    median_income = "B19013_001",
+    poverty_count = "B17001_002",
+    total_poverty_universe = "B17001_001",
+    age_65_plus = "B01001_020",
+    age_65_plus_female = "B01001_044",
+    total_age = "B01001_001",
+    no_vehicle_households = "B08201_002",
+    total_households_vehicle = "B08201_001"
+  )
+  
+  demographics <- get_acs(
+    geography = "county",
+    variables = demo_vars,
+    year = year,
+    survey = "acs5",
+    output = "wide",
+    geometry = FALSE
+  ) |>
+    transmute(
+      county_geoid = GEOID,
+      county_name_acs = NAME,
+      total_population = total_populationE,
+      median_income = median_incomeE,
+      poverty_rate = poverty_countE / total_poverty_universeE,
+      pct_age_65_plus = (age_65_plusE + age_65_plus_femaleE) / total_ageE,
+      pct_no_vehicle = no_vehicle_householdsE / total_households_vehicleE
+    )
+  
+  return(demographics)
+}
+
+# 2024 is latest that works
+county_demographics <- get_county_demographics(year = 2024)
+
+write_csv(
+  county_demographics,
+  here("Outputs", "county_demographics_acs.csv")
+)
+```
+
+```{r}
+# Helper to join demographics
+
+add_demographics <- function(df,
+                             demographics = county_demographics,
+                             geoid_col = "county_geoid",
+                             prefix = "") {
+  
+  demographics_to_join <- demographics
+  
+  # If prefix is supplied, rename demographic columns before joining
+  # Example: start_total_population, end_median_income, etc.
+  if (prefix != "") {
+    demographics_to_join <- demographics_to_join |>
+      rename_with(
+        ~ paste0(prefix, .x),
+        .cols = -county_geoid
+      )
+  }
+  
+  df |>
+    left_join(
+      demographics_to_join,
+      by = setNames("county_geoid", geoid_col)
+    )
+}
+```
+
+
+# DATA AGGREGATION
+
+## General
+
+```{r}
+##### ------ Business Activity ------ #####
+ba_data <- aggregate_csvs(
+  path_parts = c("Data","Fern_General", "Business_Activity"),
+  output_name = "business_activity_aggregated.csv",
+  lat_col = "latitude",
+  lon_col = "longitude",
+  prefix = "")
+
+ba_data <- add_demographics(
+  df = ba_data,
+  geoid_col = "county_geoid"
+)
+
+write_csv(
+  ba_data,
+  here("Outputs", "business_activity_aggregated.csv")
+)
+```
+
+```{r, execute=FALSE}
+mp_data <- aggregate_csvs(
+  path_parts = c("Data", "Fern_General", "Movement_between_Places"),
+  output_name = "movement_between_places_aggregated.csv"
+)
+
+mp_data <- add_movement_counties_fast(mp_data)
+
+write_csv(
+  mp_data,
+  here("Outputs", "movement_between_places_aggregated.csv")
+)
+
+```
+
+```{r}
+##### ------ Summary Statistics ------ #####
+analyze_dataset(ba_data)
+analyze_dataset(mp_data)
+```
+
+## Tennessee and Kentucky
+
+```{r}
+##### ------ Movement Between Places During a Crisis ------ #####
+
+tk_mp_data_admin <- aggregate_csvs(
+  path_parts = c("Data", "Tennessee_Kentucky", "Fern_Movement_Crisis", "Administrative_Regions"),
+  output_name = "tk_movement_between_places_aggregated_admin.csv"
+)
+
+tk_mp_data_admin <- add_movement_counties_fast(tk_mp_data_admin)
+
+tk_mp_data_admin <- tk_mp_data_admin |>
+  add_demographics(
+    geoid_col = "start_county_geoid",
+    prefix = "start_"
+  ) |>
+  add_demographics(
+    geoid_col = "end_county_geoid",
+    prefix = "end_"
+  )
+
+write_csv(
+  tk_mp_data_admin,
+  here("Outputs", "tk_movement_between_places_aggregated_admin.csv")
+)
+
+
+```
+
+```{r}
+tk_mp_data_bing <- aggregate_csvs(
+  path_parts = c("Data", "Tennessee_Kentucky", "Fern_Movement_Crisis", "Bing_Tiles"),
+  output_name = "tk_movement_between_places_aggregated_bing.csv"
+)
+
+tk_mp_data_bing <- add_movement_counties_fast(tk_mp_data_bing)
+
+tk_mp_data_bing <- tk_mp_data_bing |>
+  add_demographics(
+    geoid_col = "start_county_geoid",
+    prefix = "start_"
+  ) |>
+  add_demographics(
+    geoid_col = "end_county_geoid",
+    prefix = "end_"
+  )
+
+write_csv(
+  tk_mp_data_bing,
+  here("Outputs", "tk_movement_between_places_aggregated_bing.csv")
+)
+
+```
+
+```{r}
+##### ------ Facebook Population during crisis ------ #####
+tk_fb_data_admin <- aggregate_csvs(
+  path_parts = c("Data", "Tennessee_Kentucky", "Fern_Facebook_Pop_Crisis", "Administrative_Regions"),
+  output_name = "tk_facebook_pop_aggregated_admin.csv",
+  lat_col = "latitude",
+  lon_col = "longitude",
+  prefix = "",
+  impute_counts = TRUE,
+  calculate_county_change = TRUE,
+  county_group_cols = c("county_geoid", "county_name", "county_state", "ds","hour")
+)
+
+tk_fb_data_admin <- add_demographics(
+  df = tk_fb_data_admin,
+  geoid_col = "county_geoid"
+)
+
+write_csv(
+  tk_fb_data_admin,
+  here("Outputs", "tk_facebook_pop_aggregated_admin.csv")
+)
+```
+
+```{r}
+tk_fb_data_bing <- aggregate_csvs(
+  path_parts = c("Data", "Tennessee_Kentucky", "Fern_Facebook_Pop_Crisis", "Bing_Tiles"),
+  output_name = "tk_facebook_pop_aggregated_bing.csv",
+  lat_col = "latitude",
+  lon_col = "longitude",
+  prefix = "",
+  impute_counts = TRUE,
+  calculate_county_change = TRUE,
+  county_group_cols = c("county_geoid", "county_name", "county_state", "ds","hour")
+)
+
+tk_fb_data_bing <- add_demographics(
+  df = tk_fb_data_bing,
+  geoid_col = "county_geoid"
+)
+
+write_csv(
+  tk_fb_data_bing,
+  here("Outputs", "tk_facebook_pop_aggregated_bing.csv")
+)
+```
+
+```{r}
+
+##### ------ Network Coverage ------ #####
+
+tk_nc_data_active <- aggregate_csvs(
+  path_parts = c("Data", "Tennessee_Kentucky", "Fern_Network_Coverage", "Active"),
+  output_name = "tk_network_coverage_aggregated_active.csv",
+  lat_col = "lat",
+  lon_col = "lon",
+  prefix = ""
+)
+
+tk_nc_data_active <- add_demographics(
+  df = tk_nc_data_active,
+  geoid_col = "county_geoid"
+)
+
+write_csv(
+  tk_nc_data_active,
+  here("Outputs", "tk_network_coverage_aggregated_active.csv")
+)
+```
+
+```{r}
+tk_nc_data_undetected <- aggregate_csvs(
+  path_parts = c("Data", "Tennessee_Kentucky", "Fern_Network_Coverage", "Undetected"),
+  output_name = "tk_network_coverage_aggregated_undetected.csv",
+  lat_col = "lat",
+  lon_col = "lon",
+  prefix = ""
+)
+
+tk_nc_data_undetected <- add_demographics(
+  df = tk_nc_data_undetected,
+  geoid_col = "county_geoid"
+)
+
+write_csv(
+  tk_nc_data_undetected,
+  here("Outputs", "tk_network_coverage_aggregated_undetected.csv")
+)
+```
+
+```{r}
+small_value = 1
+tk_facebook_pop_bing <- aggregate_csvs(
+   path_parts = c("Data", "Tennessee_Kentucky", "Fern_Facebook_Pop_Crisis", "Bing_Tiles"),
+   output_name = "tk_facebook_pop_bing.csv",
+   lat_col = "latitude",
+   lon_col = "longitude",
+   prefix = "",
+   impute_counts = TRUE
+ )
+
+tk_facebook_pop_bing <- add_demographics(
+   df = tk_facebook_pop_bing,
+   geoid_col = "county_geoid"
+ )
+tk_facebook_pop_bing <- tk_facebook_pop_bing |>
+  mutate(
+    percent_change = ((n_crisis - n_baseline) / (n_baseline + small_value)) * 100
+    )
+
+write_csv(
+   tk_facebook_pop_bing,
+   here("Outputs", "tk_facebook_pop_bing.csv")
+ )
+```
+
+```{r}
+tk_facebook_pop_admin <- aggregate_csvs(
+   path_parts = c("Data", "Tennessee_Kentucky", "Fern_Facebook_Pop_Crisis", "Administrative_Regions"),
+   output_name = "tk_facebook_pop_admin.csv",
+   lat_col = "latitude",
+   lon_col = "longitude",
+   prefix = "",
+   impute_counts = TRUE
+ )
+
+tk_facebook_pop_admin <- add_demographics(
+   df = tk_facebook_pop_admin,
+   geoid_col = "county_geoid"
+ )
+
+tk_facebook_pop_admin <- tk_facebook_pop_admin |>
+  mutate(
+    percent_change = ((n_crisis - n_baseline) / (n_baseline + small_value)) * 100
+    )
+
+write_csv(
+   tk_facebook_pop_admin,
+   here("Outputs", "tk_facebook_pop_admin.csv")
+ )
+```
+

@@ -1,0 +1,22 @@
+{
+  "general_info": {
+    "disaster_name": "Colombia Earthquakes",
+    "country": "Colombia",
+    "disaster_start_date": "2026-08-10",
+    "data_start_date": "2026-08-10",
+    "data_end_date": "2026-08-24",
+    "disaster_type": "earthquake",
+    "available_data": [
+      "Population",
+      "Movement",
+      "Business Activity",
+      "Network Coverage"
+    ],
+    "report_exists": true,
+    "interactive_version_exists": false,
+    "report_complete": true,
+    "interactive_version_complete": false 
+  },
+  "miscellaneous": {
+  }
+}
