@@ -25,6 +25,7 @@ flood_start_date    <- "26 August 2026"   # shown under each panel title (NA = h
 flood_show_arrows   <- FALSE         # FALSE: no arrows, so nothing covers the red cells
 flood_arrow_lw      <- 0.6       # arrow line width (was 1.2)
 flood_arrow_head_cm <- 0.25      # arrow head length in cm (was 0.35)
+flood_dot_size     <- 1        # Kathmandu dot size (was 2.5)
 # ------------------------------------------------------------------------------
 
 add_flood_layers <- function(p1, map_bbox, osm = NULL,
@@ -38,16 +39,34 @@ add_flood_layers <- function(p1, map_bbox, osm = NULL,
   osm_lines_cached <- function(key, values, tag) {
     f <- file.path(cache_dir, paste0(tag, "_", bb_tag, ".rds"))
     if (file.exists(f)) return(readRDS(f))
-    message("Downloading OSM ", tag, " (first time only) ...")
-    out <- tryCatch({
-      q <- osmdata::opq(bbox = unname(map_bbox), timeout = 120) |>
-        osmdata::add_osm_feature(key = key, value = values)
-      x <- osmdata::osmdata_sf(q)$osm_lines
-      if (is.null(x) || nrow(x) == 0) NULL else sf::st_transform(x[, key], 3857)
-    }, error = function(e) {
-      warning(tag, " failed: ", conditionMessage(e), call. = FALSE); NULL
-    })
-    if (!is.null(out)) saveRDS(out, f)
+    
+    # Try several Overpass servers; the default one often times out or rate-limits.
+    servers <- c("https://overpass-api.de/api/interpreter",
+                 "https://overpass.kumi.systems/api/interpreter",
+                 "https://overpass.private.coffee/api/interpreter")
+    out <- NULL
+    for (srv in rep(servers, 3)) {          # up to 3 rounds over the servers
+      if (!is.null(out)) break
+      message("Downloading OSM ", tag, " from ", sub("https://([^/]+)/.*", "\\1", srv), " ...")
+      res <- tryCatch({
+        osmdata::set_overpass_url(srv)
+        q <- osmdata::opq(bbox = unname(map_bbox), timeout = 180) |>
+          osmdata::add_osm_feature(key = key, value = values)
+        x <- osmdata::osmdata_sf(q)$osm_lines
+        if (is.null(x) || nrow(x) == 0) "empty" else sf::st_transform(x[, key], 3857)
+      }, error = function(e) {
+        message("   failed: ", substr(conditionMessage(e), 1, 120)); NULL
+      })
+      if (inherits(res, "sf")) { out <- res; break }
+      if (identical(res, "empty")) { message("   server returned 0 features"); }
+      Sys.sleep(3)                            # brief pause before the next attempt
+    }
+    if (is.null(out)) {
+      message("*** ", tag, " could NOT be downloaded -> this layer will be missing. ",
+              "Re-run later (failures are not cached).")
+    } else {
+      saveRDS(out, f)
+    }
     out
   }
   
