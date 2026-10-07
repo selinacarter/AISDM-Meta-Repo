@@ -284,7 +284,7 @@ build_tiles <- function(fb_data_bing, re_run = re_run_cleaning, cache_dir = rds_
 format_time <- function(ds, hour, tzone) {
   datetime <- ymd_hm(
     paste(ds, hour),
-    tz = "Asia/Kathmandu"
+    tz = "America/Los_Angeles"
   )
   
   datetime_local <- with_tz(
