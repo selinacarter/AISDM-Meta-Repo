@@ -165,7 +165,7 @@ places |>
 
 ## Overview
 
-This report describes population movements around the **`r flood_date_txt`** glacier outburst flood in Nepal, using data from Meta on *Facebook Population During Crisis* data from `r first_label` to `r latest_label`. Each map compares the number of Facebook users in an area during the crisis window with a prior 90-day baseline for the same time of day and day of week (@tbl-places lists the places discussed).
+This report describes population movements around the **`r flood_date_txt`** glacier outburst flood in Nepal, using data from Meta on *Facebook Population During Crisis* from `r first_label` to `r latest_label`. Each map compares the number of Facebook users in an area during the crisis window with a prior 90-day baseline for the same time of day and day of week (@tbl-places lists the places discussed).
 
 1. **Kathmandu valley.** The map of the first window (the day of the outburst) shows the pattern of user influx and exodus around Kathmandu (@fig-diff), and the time series shows how it changes through the later windows (@fig-ts).
 
