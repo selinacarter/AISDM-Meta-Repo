@@ -208,7 +208,7 @@ panels <- map2(win$ds[pick], win$hour[pick], ~ flood_panel(.x, .y))
 #| fig-width: 7.3
 #| fig-height: 3.2
 #| out-width: "100%"
-#| fig-cap: "Net change in users (crisis − baseline), summed over a ~20 km box around each place, by data window. The dashed orange line marks the outburst date. Positive = more users than baseline."
+#| fig-cap: "Net change in users (crisis − baseline), summed over a ~20 km box around each place, by data window. The dashed orange line marks the outburst (26 August, 08:37 Nepal time); times are Nepal time (Facebook windows are stamped in Pacific Time and converted). Positive = more users than baseline."
 ts <- map_dfr(seq_len(nrow(places)), function(i) {
   p <- places[i, ]
   if (p$place == "Glacier outburst site") return(NULL)   # no population there
@@ -218,15 +218,18 @@ ts <- map_dfr(seq_len(nrow(places)), function(i) {
     group_by(ds, hour) |>
     summarise(net = sum(n_difference, na.rm = TRUE), .groups = "drop") |>
     mutate(place = p$place,
-           t = ymd_h(paste(as.character(ds), substr(hour, 1, 2))))
+           t = ymd_h(paste(as.character(ds), substr(hour, 1, 2)),
+                     tz = "America/Los_Angeles") |>
+             with_tz("Asia/Kathmandu"))
 })
 ggplot(ts, aes(t, net)) +
   geom_hline(yintercept = 0, colour = "grey60") +
-  geom_vline(xintercept = ymd_h("2026-08-26 00"), linetype = "dashed", colour = "darkorange") +
+  geom_vline(xintercept = ymd_hm("2026-08-26 08:37", tz = "Asia/Kathmandu"),
+             linetype = "dashed", colour = "darkorange") +
   geom_line(colour = "#1A2421", linewidth = 0.5) +
   geom_point(colour = "#1A2421", size = 0.8) +
   facet_wrap(~ place, nrow = 1, scales = "free_y") +
-  labs(x = "Window start (dataset clock)", y = "Net users vs. baseline") +
+  labs(x = "Window start (Nepal time)", y = "Net users vs. baseline") +
   scale_y_continuous(labels = scales::label_comma()) +
   theme_minimal(base_size = 8) +
   theme(panel.grid.minor = element_blank(),
