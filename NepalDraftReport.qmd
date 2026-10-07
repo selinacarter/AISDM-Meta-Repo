@@ -1,0 +1,298 @@
+---
+title: "Nepal Glacier Outburst Flood: Facebook Data Situation Report"
+subtitle: |
+  [NSF AI-SDM](https://www.cmu.edu/ai-sdm/) and Meta AI for Good\
+  Report Date: October 7, 2026 · Latest Data: September 8, 2026
+author:
+  - Meta Disaster Analysts            # authors
+format:
+  typst:
+    papersize: us-letter
+    margin: { x: 1.5cm, y: 1.5cm }
+    fontsize: 10pt
+    keep-typ: true
+    fig-format: png
+    fig-dpi: 300
+execute:
+  echo: false
+  warning: false
+  message: false
+  output: true
+---
+
+# Disaster Manager Brief - Nepal Glacier Outburst Flood
+
+```{r setup}
+library(tidyverse)
+library(sf)
+library(lubridate)
+library(ggforce)
+library(ggspatial)
+library(maptiles)
+library(quadkeyr)
+library(prettymapr)
+library(patchwork)
+library(terra)      # used by 3_flood_functions.R (terrain)
+library(elevatr)
+library(osmdata)
+
+# ---- Data + plotting functions (same scripts you already use) ---------------
+# NOTE: 1_data_cleaning.R sets re_run_cleaning <- TRUE and calls
+# load_population(re_run = TRUE) itself, so every render re-reads the raw CSVs.
+# For faster renders, change those two spots to use the cached .Rds files.
+env <- new.env()
+env$re_run_cleaning <- FALSE
+source("1_data_cleaning.R", local = env)
+
+# 2_plot_functions.R: load ONLY the function definitions. Everything from the
+# "Define coordinate limits..." comment onward is demo plotting code that would
+# otherwise print stray figures into the report.
+src <- readLines("2_plot_functions.R")
+cut <- grep("Define coordinate limits directly from your dataset", src, fixed = TRUE)[1]
+stopifnot(!is.na(cut))
+eval(parse(text = src[seq_len(cut - 1)]), envir = env)
+
+attach(env)   # makes w, first_ds, latest_ds, tzone, fb_data_bing, ... visible
+```
+
+```{r setup-data}
+flood_date_txt <- "26 August 2026"          # date of the glacier outburst
+
+# Map box (extended north so the outburst site is inside, and west for labels)
+lon_limits <- range(fb_data_bing$longitude, na.rm = TRUE)
+lat_limits <- range(fb_data_bing$latitude,  na.rm = TRUE)
+lat_limits[2] <- max(lat_limits[2], 28.45)
+lon_limits[1] <- lon_limits[1] - 0.25
+
+# All available windows, and three evenly spaced ones (first / middle / latest)
+win  <- fb_data_bing |>
+  distinct(ds, hour) |>
+  mutate(ds = as.character(ds)) |>
+  arrange(ds, hour)
+pick <- unique(round(seq(1, nrow(win), length.out = 3)))
+sel  <- paste(win$ds[pick], win$hour[pick])
+
+# One symmetric colour scale shared by every difference map in the report
+.m <- fb_data_bing |>
+  filter(paste(as.character(ds), hour) %in% sel) |>
+  pull(n_difference) |>
+  abs() |>
+  max(na.rm = TRUE)
+.dl <- c(-.m, .m)
+
+# Net change in users inside a small box around a place, for one window
+site_summary <- function(lon, lat, ds_ = first_ds, hr = first_hour) {
+  d <- fb_data_bing |>
+    filter(as.character(ds) == ds_, hour == hr,
+           between(longitude, lon[1], lon[2]),
+           between(latitude,  lat[1], lat[2]),
+           !is.na(n_difference))
+  list(net = sum(d$n_difference), tiles = nrow(d), area = 2.4 * 2.4 * nrow(d))
+}
+
+# Boxes around each place (~20 km); adjust if you want a tighter / wider window
+places <- tribble(
+  ~place,        ~role,                     ~lon,      ~lat,
+  "Glacier outburst site", "Outburst origin", 85.5000,  28.3000,
+  "Kathmandu",   "Capital, valley floor",   85.3240,   27.7172,
+  "Bharatpur",   "Chitwan, south-west",     84.4333,   27.6833,
+  "Hetauda",     "Makwanpur, south",        85.029716, 27.429071
+)
+half <- 0.1   # degrees either side of each place
+sums <- purrr::pmap(places, function(place, role, lon, lat, ...)
+  site_summary(lon + c(-half, half), lat + c(-half, half)))
+places$net   <- purrr::map_dbl(sums, "net")
+places$tiles <- purrr::map_int(sums, "tiles")
+places$area  <- purrr::map_dbl(sums, "area")
+
+fmt <- function(x) prettyNum(round(abs(x), 0), big.mark = ",")
+ktm  <- places |> filter(place == "Kathmandu")
+bha  <- places |> filter(place == "Bharatpur")
+het  <- places |> filter(place == "Hetauda")
+dir_word <- function(x) ifelse(x >= 0, "more", "fewer")
+mov_word <- function(x) ifelse(x >= 0, "entered", "exited")
+
+# Shared plotting helpers ------------------------------------------------------
+flood_panel <- function(ds, hr, metric = c("difference", "crisis")) {
+  metric <- match.arg(metric)
+  f <- if (metric == "difference") population_plot_n_difference else population_plot_n_crisis
+  args <- list(plot_ds = ds, plot_hour = hr, tzone = tzone,
+               lon_limits = lon_limits, lat_limits = lat_limits, zoom = 6,
+               highway_detail = "none", disaster_type = "flood")
+  if (metric == "difference") args$fill_limits <- .dl
+  do.call(f, args)
+}
+
+legend_guides <- ggplot2::guides(
+  fill   = ggplot2::guide_colorbar(title.position = "top", order = 1,
+                                   barwidth = grid::unit(6, "cm"),
+                                   barheight = grid::unit(0.35, "cm")),
+  colour = ggplot2::guide_legend(title.position = "left", order = 2, nrow = 1,
+                                 keywidth = grid::unit(1, "cm")))
+legend_theme <- ggplot2::theme(
+  legend.position = "bottom", legend.box = "vertical",
+  legend.text = ggplot2::element_text(size = 7),
+  legend.title = ggplot2::element_text(size = 8),
+  plot.margin = ggplot2::margin(2, 6, 2, 6))
+```
+
+## Key Takeaways
+
+* **Outburst and first window.** A glacier outburst flood began near the glacier site (about 28.3°N, 85.5°E) on **`r flood_date_txt`**. The first available data window is `r first_label`; the latest is `r latest_label` (@fig-diff).
+
+* **Kathmandu.** In the first window, `r fmt(ktm$net)` `r dir_word(ktm$net)` Facebook users than the prior 90-day baseline were present in the Kathmandu valley box (roughly `r round(ktm$area)` square kilometers; @fig-diff, @fig-ts).
+
+* **Bharatpur.** `r fmt(bha$net)` `r dir_word(bha$net)` users than baseline in the first window (roughly `r round(bha$area)` square kilometers).
+
+* **Hetauda.** `r fmt(het$net)` `r dir_word(het$net)` users than baseline in the first window (roughly `r round(het$area)` square kilometers).
+
+* **Persistence.** The time series (@fig-ts) shows how the net change evolves through `r latest_label`; compare the first and latest maps (@fig-diff) to see how far activity has moved back toward baseline.
+
+* Differences are relative to a 90-day baseline and do **not** imply large or small raw user counts (@fig-counts).
+
+```{r}
+#| label: tbl-places
+#| tbl-cap: "Locations used in this report, with the net change in users (crisis − baseline) in a ~20 km box around each, in the first window."
+places |>
+  transmute(Place = place,
+            Role = role,
+            `Latitude (°N)` = lat,
+            `Longitude (°E)` = lon,
+            `Net change in users` = round(net),
+            `Tiles with data` = tiles) |>
+  knitr::kable(digits = 4, format.args = list(big.mark = ","))
+```
+
+## Overview
+
+This report describes population movements around the **`r flood_date_txt`** glacier outburst flood in Nepal, using data from Meta on *Facebook Population During Crisis* data from `r first_label` to `r latest_label`. Each map compares the number of Facebook users in an area during the crisis window with a prior 90-day baseline for the same time of day and day of week (@tbl-places lists the places discussed).
+
+1. **Kathmandu valley.** The map of the first window (the day of the outburst) shows the pattern of user influx and exodus around Kathmandu (@fig-diff), and the time series shows how it changes through the later windows (@fig-ts).
+
+2. **Surrounding towns.** Bharatpur (west) and Hetauda (south) are marked on every map for context; their net change is in @tbl-places.
+
+3. Population differences (relative to a 90-day baseline) do not imply large or small raw counts present in a city. Raw counts can remain high throughout the crisis (@fig-counts).
+
+> **Before circulating:** the numbers above are computed directly from the data. Please read them against the maps and edit the interpretive sentences (e.g. whether a pattern reflects movement vs. a connectivity loss; see the caveats in the Appendix).
+
+## 1. Per-tile user population: Difference in crisis window vs. pre-crisis baseline
+
+The maps plot (crisis − baseline) per tile. **Red = fewer users than baseline (decrease); dark green = more users than baseline (increase); white = no change; grey = privacy threshold (NA).** Contours (every 500 m; bolder every 1,000 m), major rivers and major roads (OpenStreetMap) are overlaid; the orange × marks the glacier outburst site. Where cells are shaded strongly they are drawn above the terrain and rivers.
+
+```{r}
+#| label: fig-diff
+#| fig-width: 7.3
+#| fig-height: 5.4
+#| out-width: "100%"
+#| fig-cap: "Difference (crisis − baseline) per tile. Left = first window, right = latest window. Shared symmetric colour scale. Red = fewer than baseline, dark green = more than baseline, grey = NA."
+options(flood_panel_width_in = 3.2, flood_label_size = 2.4)
+((flood_panel(first_ds, first_hour) | flood_panel(latest_ds, latest_hour)) +
+    patchwork::plot_layout(guides = "collect")) & legend_guides & legend_theme
+```
+
+#### Evolution through the crisis
+
+```{r}
+#| label: fig-seq
+#| fig-width: 7.3
+#| fig-height: 4.2
+#| out-width: "100%"
+#| fig-cap: "The same map at three evenly spaced windows (first, middle, latest). Same colour scale as the figure above."
+options(flood_panel_width_in = 2.1, flood_label_size = 1.8)
+panels <- map2(win$ds[pick], win$hour[pick], ~ flood_panel(.x, .y))
+(wrap_plots(panels, nrow = 1) + patchwork::plot_layout(guides = "collect")) & legend_guides & legend_theme
+```
+
+```{r}
+#| label: fig-ts
+#| fig-width: 7.3
+#| fig-height: 3.2
+#| out-width: "100%"
+#| fig-cap: "Net change in users (crisis − baseline), summed over a ~20 km box around each place, by data window. The dashed orange line marks the outburst date. Positive = more users than baseline."
+ts <- map_dfr(seq_len(nrow(places)), function(i) {
+  p <- places[i, ]
+  if (p$place == "Glacier outburst site") return(NULL)   # no population there
+  fb_data_bing |>
+    filter(between(longitude, p$lon - half, p$lon + half),
+           between(latitude,  p$lat - half, p$lat + half)) |>
+    group_by(ds, hour) |>
+    summarise(net = sum(n_difference, na.rm = TRUE), .groups = "drop") |>
+    mutate(place = p$place,
+           t = ymd_h(paste(as.character(ds), substr(hour, 1, 2))))
+})
+ggplot(ts, aes(t, net)) +
+  geom_hline(yintercept = 0, colour = "grey60") +
+  geom_vline(xintercept = ymd_h("2026-08-26 00"), linetype = "dashed", colour = "darkorange") +
+  geom_line(colour = "#1A2421", linewidth = 0.5) +
+  geom_point(colour = "#1A2421", size = 0.8) +
+  facet_wrap(~ place, nrow = 1, scales = "free_y") +
+  labs(x = "Window start (dataset clock)", y = "Net users vs. baseline") +
+  scale_y_continuous(labels = scales::label_comma()) +
+  theme_minimal(base_size = 8) +
+  theme(panel.grid.minor = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## 2. Raw user counts
+
+Raw users per tile in the latest window show where users **are**, not where change occurred. Metro areas (Kathmandu valley in particular) remain the most heavily used even when they differ from baseline.
+
+```{r}
+#| label: fig-counts
+#| fig-width: 7.3
+#| fig-height: 5
+#| out-width: "70%"
+#| fig-cap: "Raw crisis user counts per tile in the latest window (log scale)."
+options(flood_panel_width_in = 3.2, flood_label_size = 2.4)
+flood_panel(latest_ds, latest_hour, metric = "crisis") &
+  ggplot2::theme(legend.position = "bottom")
+```
+
+{{< pagebreak >}}
+
+## Appendix
+
+## Data description
+
+We use Meta's **Facebook Population During Crisis** dataset, which displays location activity from Facebook users (with **Location Services on**) to estimate how population shifts during a crisis. The data represent **Facebook app users**, not everyone in the area, henceforth "users". The dataset compares user behavior near the incident with pre-crisis behavior at two levels: fixed **8-hour windows** and **Bing tiles** (level 14, ~2.4 km or ~1.5 mi squares). For privacy, a window is shown as NA / grey when either the crisis **or** the baseline count is under 10 users. Grey indicates "one side was below threshold" (not "no change" or "fewer than 10 people total"). Two signals are used: comparison to a **pre-crisis baseline** for the same time-of-day / day-of-week (a 90-day baseline), and **raw user counts** at window *T*.
+
+As of this report the latest **population** window is `r latest_label`. The maps in Section 1–2 therefore show windows from `r first_label` to `r latest_label`.
+
+::: {.callout-warning title="Data caveats" appearance="simple"}
+- **Sample bias.** This data covers only Facebook users with Location Services turned on.
+- **Data intervals.** 8-hour windows, up to ~8 h delay.
+- **Tile size.** ~2.4 km or ~1.5 mi, neighborhood-scale, not address-level.
+- **Privacy controls.** A window is NA / grey when the crisis or baseline count is <10 (both <10 means the row is dropped).
+- **Baselines.** Population data use a 90-day baseline before the crisis.
+- **Evacuation vs connectivity.** A tile emptying could mean people left **or** power / cell service dropped, which is plausible in flood-affected, mountainous terrain.
+- **Terrain.** Valley and mountain geography can concentrate both movement and signal loss in a few tiles; read the contour lines when comparing areas.
+- **Who is under-counted.** The signal skews toward mobile, connected, vehicle-owning residents and may under-capture access-and-functional-needs populations, such as people with mobility limits, no vehicle, or no transit option.
+- **Users ≠ people ≠ vehicles.** Counts are a fraction of residents. These figures are not a road-traffic count.
+:::
+
+#### Full scope of data
+
+```{r}
+#| label: fig-full
+#| fig-width: 7.3
+#| fig-height: 5.4
+#| out-width: "100%"
+#| fig-cap: "Overview map of the entire data extent used in this report: user locations (blue) with Kathmandu and the glacier outburst site marked."
+loc <- fb_data_bing |> distinct(longitude, latitude)
+ggplot(loc, aes(longitude, latitude)) +
+  geom_point(colour = "blue", alpha = 0.15, size = 0.4) +
+  annotate("point", x = 85.3240, y = 27.7172, colour = "red", shape = 4, stroke = 1.2, size = 4) +
+  annotate("label", x = 85.3240 + 0.12, y = 27.7172 - 0.1, label = "Kathmandu",
+           fontface = "bold", fill = "white", size = 3) +
+  annotate("point", x = 85.5, y = 28.3, colour = "darkorange", shape = 4, stroke = 1.5, size = 4) +
+  annotate("label", x = 85.5 - 0.3, y = 28.3, label = "Glacier outburst site",
+           fontface = "bold", fill = "white", size = 3) +
+  coord_fixed() +
+  labs(x = "Longitude (°E)", y = "Latitude (°N)") +
+  theme_minimal(base_size = 8)
+```
+
+#### Sources
+
+* Meta : Facebook Population During Crisis.
+* Map data © OpenStreetMap contributors (rivers, roads); terrain from AWS Terrain Tiles via the `elevatr` package; basemap tiles via `maptiles`.

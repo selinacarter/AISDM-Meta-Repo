@@ -24,7 +24,8 @@ clean_numeric <- function(x) {
 }
 
 
-re_run_cleaning <- TRUE
+# re_run_cleaning <- TRUE
+if (!exists("re_run_cleaning")) re_run_cleaning <- TRUE
 tzone <- "Asia/Kathmandu"
 
 ##########################
@@ -322,8 +323,8 @@ compute_windows <- function(fb_data_bing, tzone) {
 }
 
 ##############################################
-fb_data_bing <- load_population(re_run = TRUE)
-
+# fb_data_bing <- load_population(re_run = TRUE)
+fb_data_bing <- load_population(re_run = re_run_cleaning)
 #############################################
 
 
@@ -383,3 +384,4 @@ w <- compute_windows(fb_data_bing, tzone)
 attach(w)
 mp_data_bing <- load_movement()
 # moved <- build_moved(mp_data_bing) ### Did not understand
+
