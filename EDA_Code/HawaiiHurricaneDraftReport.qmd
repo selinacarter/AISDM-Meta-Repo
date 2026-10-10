@@ -1,0 +1,516 @@
+---
+title: "Hawaiʻi Hurricane Lala: Facebook Data Situation Report"
+subtitle: |
+  [NSF AI-SDM](https://www.cmu.edu/ai-sdm/) and Meta AI for Good\
+  Draft hurricane situation report
+author:
+  - Meta Disaster Analysts
+format:
+  typst:
+    papersize: us-letter
+    margin: { x: 1.5cm, y: 1.5cm }
+    fontsize: 10pt
+    keep-typ: true
+    fig-format: png
+    fig-dpi: 300
+execute:
+  echo: false
+  warning: false
+  message: false
+  output: true
+---
+
+# Disaster Manager Brief - Hurricane Lala, Hawaiʻi
+
+```{r setup}
+library(tidyverse)
+library(sf)
+library(lubridate)
+library(ggforce)
+library(ggspatial)
+library(ggnewscale)
+library(maptiles)
+library(quadkeyr)
+library(prettymapr)
+library(patchwork)
+library(terra)
+library(elevatr)
+library(osmdata)
+library(here)
+
+# --------------------------------------------------------------------------
+# PROJECT PATH & ANCHOR RESOLUTION
+# --------------------------------------------------------------------------
+if (file.exists(here::here("Situation_Reports/2026_08_Hawaii_Hurricane/HawaiiHurricaneDraftReport.qmd"))) {
+  here::i_am("Situation_Reports/2026_08_Hawaii_Hurricane/HawaiiHurricaneDraftReport.qmd")
+} else if (file.exists("HawaiiHurricaneDraftReport.qmd")) {
+  here::i_am("HawaiiHurricaneDraftReport.qmd")
+}
+
+# --------------------------------------------------------------------------
+# EVENT CONFIG
+# --------------------------------------------------------------------------
+event_dir <- if (dir.exists(here::here("The Hurricane in Hawaii"))) {
+  "The Hurricane in Hawaii"
+} else {
+  c("Situation_Reports", "2026_08_Hawaii_Hurricane")
+}
+
+event_path <- do.call(here::here, as.list(event_dir))
+
+# The report labels all times in HST, and the population windows are
+# 2026-08-15 00:00 ... 2026-08-29 16:00 on that same clock.
+tzone           <- "Pacific/Honolulu"
+data_tz         <- "Pacific/Honolulu"
+re_run_cleaning <- FALSE   # TRUE to rebuild the .Rds caches from the CSVs
+
+storm_name <- "Lala"
+storm_id   <- "CP012026"
+
+event_start_ds   <- "2026-08-15"
+event_start_hour <- "0000"
+
+event_mid_ds   <- "2026-08-22"
+event_mid_hour <- "0800"
+
+statewide_path_ds   <- "2026-08-16"
+statewide_path_hour <- "0800"
+
+event_end_ds   <- "2026-08-29"
+event_end_hour <- "1600"
+
+big_island_lon <- c(-156.2, -154.6)
+big_island_lat <- c(18.8, 20.4)
+
+hawaii_lon <- c(-161.0, -153.0)
+hawaii_lat <- c(17.5, 23.5)
+
+site_box_miles <- 12
+
+cities <- tribble(
+  ~place,             ~role,                          ~lon,       ~lat,     ~label_dx_m, ~label_dy_m,
+  "Hilo",             "East Hawaiʻi population hub",   -155.0885,  19.7074,   25000,       18000,
+  "Kailua-Kona",      "West Hawaiʻi population hub",   -155.9969,  19.6400,   32000,      -18000,
+  "Waikoloa Village", "Northwest Hawaiʻi community",   -155.7900,  19.9400,   18000,       22000,
+  "Pāhoa",            "Puna district community",      -154.9517,  19.4975,   25000,      -18000
+)
+
+best_track_src     <- NULL
+forecast_src       <- NULL
+forecast_track_kmz <- NULL
+forecast_cone_kmz  <- NULL
+
+hurricane_config <- list(
+  storm_name          = storm_name,
+  storm_id            = storm_id,
+  track_src           = best_track_src,
+  forecast_src        = forecast_src,
+  forecast_track_kmz  = forecast_track_kmz,
+  forecast_cone_kmz   = forecast_cone_kmz,
+  cities              = cities,
+  terrain_zoom        = 9,
+  contour_by          = 500,
+  roads               = "major",
+  rivers              = "major",
+  pop_alpha           = 0.82,
+  show_storm_legend   = FALSE,
+  show_path_legend    = FALSE,
+  show_context_legend = FALSE,
+  source_tz           = data_tz,
+  cache_dir           = file.path(event_path, "map_cache", "hurricane")
+)
+
+hurricane_overview_config <- modifyList(
+  hurricane_config,
+  list(
+    cities              = NULL,
+    terrain_zoom        = 7,
+    contour_by          = 1000,
+    roads               = "none",
+    rivers              = "none",
+    pop_alpha           = 0.82,
+    show_storm_legend   = TRUE,
+    show_path_legend    = TRUE,
+    show_context_legend = FALSE
+  )
+)
+
+# --------------------------------------------------------------------------
+# LOAD DATA + FUNCTIONS
+# 1_data_cleaning.R loads fb_data_bing, tiles_3857, the attached window labels,
+# mp_data_bing and moved. 2_plot_functions.R defines shared_limits(),
+# population_plot() (which sources 3_hurricane_functions.R for
+# disaster_type = "hurricane") and the population_plot_n_* wrappers.
+# --------------------------------------------------------------------------
+clean_path <- if (file.exists(here::here("EDA_Code", "1_data_cleaning.R"))) {
+  here::here("EDA_Code", "1_data_cleaning.R")
+} else {
+  here::here("1_data_cleaning.R")
+}
+source(clean_path)
+
+plot_func_path <- if (file.exists(here::here("EDA_Code", "2_plot_functions.R"))) {
+  here::here("EDA_Code", "2_plot_functions.R")
+} else {
+  here::here("2_plot_functions.R")
+}
+source(plot_func_path)
+
+hurr_func_file <- if (file.exists(here::here("EDA_Code", "3_hurricane_functions.R"))) {
+  here::here("EDA_Code", "3_hurricane_functions.R")
+} else {
+  here::here("3_hurricane_functions.R")
+}
+if (!file.exists(hurr_func_file)) {
+  stop("3_hurricane_functions.R not found; population_plot(disaster_type = 'hurricane') needs it.")
+}
+if (!file.exists("3_hurricane_functions.R") &&
+    !file.exists(here::here("EDA_Code", "3_hurricane_functions.R"))) {
+  file.copy(hurr_func_file, "3_hurricane_functions.R")
+}
+```
+
+```{r data-prep}
+# --------------------------------------------------------------------------
+# Window availability verification (expected 8-hour windows)
+# --------------------------------------------------------------------------
+expected_windows <- tibble(
+  window_time = seq(
+    ymd_hm(paste(event_start_ds, event_start_hour), tz = data_tz),
+    ymd_hm(paste(event_end_ds, event_end_hour), tz = data_tz),
+    by = "8 hours"
+  )
+) |>
+  transmute(
+    ds   = as.Date(window_time),
+    hour = format(window_time, "%H%M")
+  )
+
+available_windows <- fb_data_bing |>
+  distinct(ds, hour) |>
+  mutate(ds = as.Date(ds), hour = as.character(hour)) |>
+  arrange(ds, hour)
+
+missing_windows <- anti_join(expected_windows, available_windows, by = c("ds", "hour"))
+
+if (nrow(missing_windows) > 0) {
+  warning(nrow(missing_windows), " expected 8-hour population windows are missing.")
+}
+
+first_label          <- format_time(event_start_ds, event_start_hour, tzone = tzone, source_tz = data_tz)
+mid_label            <- format_time(event_mid_ds, event_mid_hour, tzone = tzone, source_tz = data_tz)
+statewide_path_label <- format_time(statewide_path_ds, statewide_path_hour, tzone = tzone, source_tz = data_tz)
+latest_label         <- format_time(event_end_ds, event_end_hour, tzone = tzone, source_tz = data_tz)
+
+# --------------------------------------------------------------------------
+# Shared fill limits (shared_limits() comes from 2_plot_functions.R)
+# --------------------------------------------------------------------------
+diff_fill_limits <- shared_limits(
+  col            = "Difference between baseline and crisis",
+  symmetric      = TRUE,
+  ds1            = event_start_ds, hour1 = event_start_hour,
+  ds2            = event_end_ds,   hour2 = event_end_hour,
+  lon_limits_use = big_island_lon,
+  lat_limits_use = big_island_lat
+)
+
+statewide_fill_limits <- shared_limits(
+  col            = "Difference between baseline and crisis",
+  symmetric      = TRUE,
+  ds1            = statewide_path_ds, hour1 = statewide_path_hour,
+  ds2            = statewide_path_ds, hour2 = statewide_path_hour,
+  lon_limits_use = hawaii_lon,
+  lat_limits_use = hawaii_lat
+)
+
+# --------------------------------------------------------------------------
+# Exact 12 x 12 mile city boxes + time series
+# --------------------------------------------------------------------------
+city_boxes <- make_site_boxes(cities, width_miles = site_box_miles)
+
+city_ts <- site_population_timeseries(
+  fb_data     = fb_data_bing,
+  sites       = cities,
+  width_miles = site_box_miles,
+  source_tz   = data_tz,
+  output_tz   = tzone
+) |>
+  filter(
+    window_time >= ymd_hm(paste(event_start_ds, event_start_hour), tz = data_tz),
+    window_time <= ymd_hm(paste(event_end_ds, event_end_hour), tz = data_tz)
+  )
+
+first_city <- city_ts |>
+  filter(as.character(ds) == event_start_ds, hour == event_start_hour)
+
+places <- cities |>
+  left_join(
+    first_city |> select(place, net_users, crisis_users, tiles_with_data),
+    by = "place"
+  ) |>
+  mutate(
+    net_users       = coalesce(net_users, 0),
+    tiles_with_data = coalesce(tiles_with_data, 0L),
+    area_km2        = tiles_with_data * 2.4 * 2.4
+  )
+
+# --------------------------------------------------------------------------
+# Panel generator + shared legend styling
+# --------------------------------------------------------------------------
+hurricane_panel <- function(
+    ds,
+    hr,
+    metric      = c("difference", "crisis"),
+    lon_limits  = big_island_lon,
+    lat_limits  = big_island_lat,
+    zoom        = 8,
+    config      = hurricane_config,
+    fill_limits = diff_fill_limits
+) {
+  metric <- match.arg(metric)
+  f <- if (metric == "difference") population_plot_n_difference else population_plot_n_crisis
+
+  args <- list(
+    plot_ds         = ds,
+    plot_hour       = hr,
+    tzone           = tzone,
+    lon_limits      = lon_limits,
+    lat_limits      = lat_limits,
+    zoom            = zoom,
+    highway_detail  = "none",   # roads/rivers come from the hurricane layer
+    disaster_type   = "hurricane",
+    disaster_config = config,
+    title           = TRUE
+  )
+
+  if (metric == "difference" && !is.null(fill_limits)) {
+    args$fill_limits <- fill_limits
+  }
+
+  do.call(f, args)
+}
+
+legend_guides <- ggplot2::guides(
+  fill = ggplot2::guide_colorbar(
+    title.position = "top",
+    order          = 1,
+    barwidth       = grid::unit(6, "cm"),
+    barheight      = grid::unit(0.35, "cm")
+  ),
+  colour = ggplot2::guide_legend(
+    title.position = "left",
+    order          = 2,
+    nrow           = 2,
+    keywidth       = grid::unit(1.1, "cm")
+  )
+)
+
+legend_theme <- ggplot2::theme(
+  legend.position = "bottom",
+  legend.box      = "vertical",
+  legend.text     = ggplot2::element_text(size = 7),
+  legend.title    = ggplot2::element_text(size = 8),
+  plot.margin     = ggplot2::margin(2, 6, 2, 6)
+)
+
+# --------------------------------------------------------------------------
+# Figures
+# --------------------------------------------------------------------------
+p_hawaii_path <- hurricane_panel(
+  ds          = statewide_path_ds,
+  hr          = statewide_path_hour,
+  metric      = "difference",
+  lon_limits  = hawaii_lon,
+  lat_limits  = hawaii_lat,
+  zoom        = 6,
+  config      = hurricane_overview_config,
+  fill_limits = statewide_fill_limits
+)
+
+fig_hawaii_path <- p_hawaii_path +
+  labs(
+    subtitle = paste0(
+      "As Hurricane Lala Downgraded to Tropical Storm | ",
+      "solid black = realized path; red dashed = official forecast"
+    )
+  ) +
+  # Layout: map on the left; storm-intensity / max-wind / track legends in one
+  # compact column on the right (top-aligned); population colorbar centred
+  # under the map. Key sizes for the right-hand legends are set in
+  # 3_hurricane_functions.R.
+  theme(
+    legend.box.spacing         = grid::unit(0.3, "cm"),
+    legend.justification.right = "top",
+    legend.justification.bottom = "center",
+    legend.text                = ggplot2::element_text(size = 8),
+    legend.title               = ggplot2::element_text(size = 9, face = "bold"),
+    legend.spacing.y           = grid::unit(0.25, "cm"),
+    plot.title                 = ggplot2::element_text(size = 12, face = "bold"),
+    plot.subtitle              = ggplot2::element_text(size = 8.5, colour = "grey30"),
+    plot.margin                = ggplot2::margin(4, 6, 4, 6)
+  )
+
+p_first  <- hurricane_panel(event_start_ds, event_start_hour)
+p_mid    <- hurricane_panel(event_mid_ds,   event_mid_hour)
+p_latest <- hurricane_panel(event_end_ds,   event_end_hour)
+
+fig_difference <- (p_first | p_mid | p_latest) +
+  patchwork::plot_layout(guides = "collect") &
+  legend_guides &
+  legend_theme
+
+fig_city_ts <- ggplot(city_ts, aes(window_time, net_users)) +
+  geom_hline(yintercept = 0, colour = "grey60") +
+  geom_line(colour = "darkgreen", linewidth = 0.55) +
+  geom_point(colour = "darkgreen", size = 0.9) +
+  facet_wrap(~ place, ncol = 2, scales = "free_y") +
+  labs(
+    x = "Window start (HST)",
+    y = "Net users vs. baseline",
+    title = paste0(
+      "Population change in selected ", site_box_miles, " × ", site_box_miles,
+      " mile city regions"
+    )
+  ) +
+  scale_y_continuous(labels = scales::label_comma()) +
+  theme_minimal(base_size = 9) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+## Key Takeaways
+
+```{r key-takeaways}
+#| output: asis
+# Values are emitted from a chunk (not inline `r` code) so they are always
+# evaluated after the setup / data-prep chunks have run.
+cat(
+  "- **Data period.** The population series spans ", first_label, " through ",
+  latest_label, ", with one observation every eight hours. The statewide ",
+  "storm-path context figure is shown at ", statewide_path_label, ".\n",
+  sep = ""
+)
+cat(
+  "- **City selections.** Population time series use exact ", site_box_miles,
+  " × ", site_box_miles, " mile square selections centered on Hilo, ",
+  "Kailua-Kona, Waikoloa Village, and Pāhoa.\n",
+  sep = ""
+)
+```
+
+- **Population change.** Red tiles indicate fewer Facebook users than the historical baseline; green tiles indicate more users. The maps use a symmetric dark red → white → dark green scale.
+- **Terrain context.** Elevation from `elevatr` is processed with `terra` into a hillshade (shaded relief) layer, so Hawaiʻi Island's topography is visible without competing with the population tiles.
+- **Storm track.** A solid line represents the realized NHC/CPHC best track through the time of each map, with circular markers coloured by storm intensity. The official path predicted at or before that map time is shown separately as a red dashed line with diamond markers.
+- **Map hierarchy.** Shaded terrain, rivers, and hurricane-track information are drawn below the population surface. The Bing population polygons remain visually dominant, while major roads are drawn on top of the Bing tiles so the transportation network stays easy to read. City labels remain above the roads.
+- **City selections.** Population time series use exact `r site_box_miles` × `r site_box_miles` mile square selections centered on Hilo, Kailua-Kona, Waikoloa Village, and Pāhoa.
+
+```{r}
+#| label: tbl-cities
+#| tbl-cap: !expr 'paste0("Cities used in the Big Island analysis and the population change in each ", site_box_miles, " × ", site_box_miles, " mile selection during the first available window.")'
+places |>
+  transmute(
+    Place                 = place,
+    Role                  = role,
+    Latitude              = sprintf("%.4f", lat),
+    Longitude             = sprintf("%.4f", lon),
+    `Net change in users` = prettyNum(round(net_users, 0), big.mark = ","),
+    `Tiles with data`     = tiles_with_data
+  ) |>
+  knitr::kable(align = "llrrrr")
+```
+
+## Overview
+
+This report describes population movement on Hawaiʻi Island during Hurricane Lala using Meta's Facebook Population During Crisis data from `r first_label` through `r latest_label`. Population observations occur every eight hours.
+
+The detailed Big Island maps combine the population signal with shaded terrain, major rivers, major roads, and NHC/CPHC storm-track information. The Bing population layer is intentionally near the top of the visual hierarchy so population changes remain visually dominant, while major roads are drawn above the tiles to keep the transportation network legible.
+
+## 1. Statewide Hawaiʻi storm-path context on August 16
+
+This statewide view is shown at `r statewide_path_label` so the realized approach of the storm and the official forecast available at that point can be interpreted in relation to the Hawaiian Islands as a whole.
+
+```{r}
+#| label: fig-hawaii-path
+#| fig-cap: "Statewide Hawaiʻi view at August 16, 2026 08:00 HST. The observed track is shown with circular intensity markers; the official forecast uses a red dashed path and diamond markers."
+#| fig-width: 10
+#| fig-height: 5
+#| out-width: 100%
+fig_hawaii_path
+```
+
+## 2. Big Island population change: Evolution through the crisis
+
+**Dark red = fewer users than baseline; dark green = more users than baseline; white = little/no net change; grey = privacy-threshold / missing data.**
+
+The detailed maps use shaded relief and make major roads more visible. The Bing population cells sit second-to-top so the population pattern is the dominant visual element. The three panels below correspond exactly to the start, midpoint, and end of the Hurricane Lala data collection.
+
+```{r}
+#| label: fig-difference
+#| fig-cap: "Population difference at the start, exact midpoint, and end of the event period. All panels use the same population-change scale."
+#| fig-width: 10
+#| fig-height: 4.6
+#| out-width: 100%
+fig_difference
+```
+
+```{r}
+#| label: fig-city-ts
+#| fig-cap: !expr 'paste0("Net change in users (crisis − baseline) within exact ", site_box_miles, " × ", site_box_miles, " mile square selections centered on each Big Island city, in 8-hour intervals.")'
+#| fig-width: 8
+#| fig-height: 5.6
+#| out-width: 100%
+fig_city_ts
+```
+
+{{< pagebreak >}}
+
+# Appendix
+
+## Data description
+
+The analysis uses Meta's Facebook Population During Crisis data. The signal represents Facebook app users with Location Services enabled, not the full resident population. For this event the population series runs from `r first_label` HST through `r latest_label` HST, in 8-hour increments.
+
+Population measurements are provided in Bing level-14 tiles. Crisis counts are compared with the historical baseline for the corresponding time period.
+
+For city-level summaries, each city is centered within an exact `r site_box_miles` × `r site_box_miles` mile square constructed in a local metric projection before population tiles are spatially selected.
+
+## Map, terrain, and storm data
+
+Terrain is built from elevation downloaded through `elevatr`, projected with `terra`, converted to a hillshade from slope and aspect, and cached locally. The shaded relief sits directly above the basemap and below all other layers.
+
+Major rivers and roads are queried from OpenStreetMap and cached locally. The code rotates across multiple Overpass endpoints if a server times out.
+
+NHC/CPHC ATCF data provide the observed best track and official forecast track. For retrospective reporting, the hurricane helper checks both current ATCF aid files and the yearly ATCF archive. The forecast selected for a map is the latest official (OFCL) forecast initialized at or before that map's time.
+
+The map distinguishes storm history from prediction:
+
+- Solid line with circular markers: realized / observed best track through the map time; marker colour = storm intensity, marker size = maximum sustained wind.
+- Red dashed line with diamond markers: official predicted center track available at or before the map time.
+- Blue translucent area: forecast uncertainty cone when a specific archived cone KMZ is supplied.
+- Grey shading: terrain hillshade.
+- Black road lines: major road network, drawn above the Bing population layer.
+- Blue lines: major rivers.
+- Dark red → white → dark green cells: population change relative to baseline.
+
+## Data caveats
+
+- **Sample bias.** The data cover Facebook users with Location Services enabled, not all residents or visitors.
+- **Data intervals.** Population data are aggregated into 8-hour windows.
+- **Privacy controls.** Suppressed / missing tiles should not be interpreted as zero population change.
+- **Baseline comparison.** Crisis differences are relative to a historical baseline, not direct evacuation counts.
+- **Connectivity.** Apparent population decreases can reflect evacuation, power loss, cell-service disruption, or a combination.
+- **Terrain.** Hawaiʻi Island's topography can constrain travel and isolate communities; movement patterns should be interpreted alongside the terrain shading and road network.
+- **Forecast vs. observed track.** The forecast path represents what was predicted at that point in the event; the best track is the retrospective observed/analysed storm path.
+- **Users ≠ people.** Facebook-user counts are not direct counts of residents, evacuees, vehicles, or shelter demand.
+
+## Sources
+
+- Meta: Facebook Population During Crisis.
+- NOAA National Hurricane Center / Central Pacific Hurricane Center: ATCF best-track and official forecast products.
+- Map data © OpenStreetMap contributors.
+- Terrain from AWS Terrain Tiles through the `elevatr` package.
+- Basemap tiles through `maptiles`.
+
+

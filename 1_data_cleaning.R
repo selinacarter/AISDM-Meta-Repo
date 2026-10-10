@@ -13,8 +13,39 @@ library(rosm)
 
 
 ######------- Data Cleaning Functions --------#######
+<<<<<<< Updated upstream:1_data_cleaning.R
 path <- "/Users/snehilrayal/Desktop/AI SDM/AI-SDM/Nepal/"
 script_path <- file.path(path, "1_data_cleaning.R")
+=======
+path <- "/Users/snehilrayal/Desktop/AI SDM/AI-SDM/Hurricane/Hawai/AISDM-Meta-Repo/EDA_Code"
+script_path <- file.path(path, "1_data_cleaning.R")
+here::i_am("EDA_Code/1_data_cleaning.R")
+
+
+# -----------------------------------------------------------------------------
+# Event-level settings are supplied by the run script / report.
+# This keeps the cleaning pipeline reusable for future hurricanes.
+# -----------------------------------------------------------------------------
+event_dir <- "The Hurricane in Hawaii"
+if (!exists("event_dir", inherits = TRUE)) {
+  stop(
+    "Set `event_dir` before sourcing 1_data_cleaning.R, e.g. ",
+    "event_dir <- c('Situation_Reports', '2026_08_Hawaii_Hurricane')"
+  )
+}
+if (!exists("tzone", inherits = TRUE)) {
+  tzone <- "UTC"
+}
+if (!exists("data_tz", inherits = TRUE)) {
+  # Time zone encoded by the population filenames / ds + hour fields.
+  # Event scripts can override this before sourcing the cleaning script.
+  data_tz <- tzone
+}
+if (!exists("re_run_cleaning", inherits = TRUE)) {
+  re_run_cleaning <- FALSE
+}
+
+>>>>>>> Stashed changes:EDA_Code/1_data_cleaning.R
 
 # Convert possible "\N" values to proper numeric NA values.
 # NOTE: for the CSV load path this is now handled at read time via the `na=`
@@ -158,7 +189,11 @@ load_population <- function(re_run = TRUE, cache_dir = rds_cache_dir,
     target_dir <- file.path(k, sub_folder)
     
     fb <- aggregate_csvs(
+<<<<<<< Updated upstream:1_data_cleaning.R
       path_parts = target_dir,
+=======
+      path_parts = c(event_dir, "Population Data During Crisis"),
+>>>>>>> Stashed changes:EDA_Code/1_data_cleaning.R
       lat_col = "latitude",
       lon_col = "longitude"
     )
@@ -175,10 +210,14 @@ load_movement <- function(re_run = TRUE, cache_dir = rds_cache_dir,
   path <- cache_path(cache, cache_dir)
   if (re_run || !file.exists(path)) {
     message("Building movement data from CSVs -> ", path)
+<<<<<<< Updated upstream:1_data_cleaning.R
     lm_loc <- "/Users/snehilrayal/Desktop/AI SDM/AI-SDM/Nepal"
     lm_loc_sub_folder <- "Facebook Population During Crisis"
     target_dir <- file.path(lm_loc, lm_loc_sub_folder)
     mp <- aggregate_csvs(path_parts = target_dir)
+=======
+    mp <- aggregate_csvs(path_parts = c(event_dir, "Movement Data During Crisis"))
+>>>>>>> Stashed changes:EDA_Code/1_data_cleaning.R
     saveRDS(mp, path)
     mp
   } else {
