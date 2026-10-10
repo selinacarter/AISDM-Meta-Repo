@@ -13,7 +13,31 @@ library(rosm)
 
 
 ######------- Data Cleaning Functions --------#######
-here::i_am("1_data_cleaning.R")
+here::i_am("EDA_Code/1_data_cleaning.R")
+
+
+# -----------------------------------------------------------------------------
+# Event-level settings are supplied by the run script / report.
+# This keeps the cleaning pipeline reusable for future hurricanes.
+# -----------------------------------------------------------------------------
+if (!exists("event_dir", inherits = TRUE)) {
+  stop(
+    "Set `event_dir` before sourcing 1_data_cleaning.R, e.g. ",
+    "event_dir <- c('Situation_Reports', '2026_08_Hawaii_Hurricane')"
+  )
+}
+if (!exists("tzone", inherits = TRUE)) {
+  tzone <- "UTC"
+}
+if (!exists("data_tz", inherits = TRUE)) {
+  # Time zone encoded by the population filenames / ds + hour fields.
+  # Event scripts can override this before sourcing the cleaning script.
+  data_tz <- tzone
+}
+if (!exists("re_run_cleaning", inherits = TRUE)) {
+  re_run_cleaning <- FALSE
+}
+
 
 # Convert possible "\N" values to proper numeric NA values.
 # NOTE: for the CSV load path this is now handled at read time via the `na=`
@@ -137,7 +161,7 @@ load_population <- function(re_run = re_run_cleaning, cache_dir = rds_cache_dir,
     message("Building population data from CSVs -> ", path)
     #Selina: no drop_na(n_difference) — an explicit NA is useful (it means < 11 users).
     fb <- aggregate_csvs(
-      path_parts = c("fb_pop_crisis_bing_tiles"),
+      path_parts = c(event_dir, "fb_pop_crisis_bing_tiles"),
       lat_col = "latitude",
       lon_col = "longitude"
     )
@@ -154,7 +178,7 @@ load_movement <- function(re_run = re_run_cleaning, cache_dir = rds_cache_dir,
   path <- cache_path(cache, cache_dir)
   if (re_run || !file.exists(path)) {
     message("Building movement data from CSVs -> ", path)
-    mp <- aggregate_csvs(path_parts = c("fb_move_crisis_bing_tiles"))
+    mp <- aggregate_csvs(path_parts = c(event_dir, "fb_move_crisis_bing_tiles"))
     saveRDS(mp, path)
     mp
   } else {
@@ -256,10 +280,10 @@ build_tiles <- function(fb_data_bing, re_run = re_run_cleaning, cache_dir = rds_
     dplyr::rename(`# Users During Crisis` = n_crisis)
 }
 
-format_time <- function(ds, hour, tzone) {
+format_time <- function(ds, hour, tzone, source_tz = data_tz) {
   datetime <- ymd_hm(
     paste(ds, hour),
-    tz = "America/Los_Angeles"
+    tz = source_tz
   )
   
   datetime_local <- with_tz(
@@ -296,6 +320,211 @@ compute_windows <- function(fb_data_bing, tzone) {
     latest_label = format_time(as.character(lw$ds), lw$hour, tzone = tzone)
   )
 }
+
+
+
+# =============================================================================
+# Site-selection helpers
+#
+# Used by hurricane reports to select an exact square around each city.
+# The default is 12 x 12 miles (6 miles from the center in each direction).
+# A local azimuthal-equidistant CRS is used for each site so the requested
+# dimensions are defined in metres rather than approximate longitude/latitude
+# degrees.
+# =============================================================================
+
+miles_to_m <- function(x) {
+  x * 1609.344
+}
+
+make_site_boxes <- function(
+    sites,
+    width_miles = 12
+) {
+  
+  required <- c(
+    "place",
+    "lon",
+    "lat"
+  )
+  
+  missing_cols <- setdiff(
+    required,
+    names(sites)
+  )
+  
+  if (length(missing_cols)) {
+    stop(
+      "`sites` is missing: ",
+      paste(
+        missing_cols,
+        collapse = ", "
+      )
+    )
+  }
+  
+  
+  # Half-width of the square in metres
+  half_m <- miles_to_m(width_miles) / 2
+  
+  
+  boxes <- lapply(
+    seq_len(nrow(sites)),
+    function(i) {
+      
+      lon0 <- as.numeric(
+        sites$lon[i]
+      )
+      
+      lat0 <- as.numeric(
+        sites$lat[i]
+      )
+      
+      
+      # Local projection centered on the city
+      local_crs <- paste0(
+        "+proj=aeqd ",
+        "+lat_0=", lat0, " ",
+        "+lon_0=", lon0, " ",
+        "+datum=WGS84 ",
+        "+units=m ",
+        "+no_defs"
+      )
+      
+      
+      # City center
+      p <- sf::st_as_sf(
+        data.frame(
+          place = sites$place[i],
+          lon = lon0,
+          lat = lat0
+        ),
+        coords = c(
+          "lon",
+          "lat"
+        ),
+        crs = 4326
+      ) |>
+        sf::st_transform(
+          local_crs
+        )
+      
+      
+      xy <- sf::st_coordinates(p)
+      
+      
+      # IMPORTANT:
+      # st_coordinates() returns named X/Y values.
+      # Remove those names before using them in st_bbox().
+      x <- unname(
+        as.numeric(
+          xy[1, 1]
+        )
+      )
+      
+      y <- unname(
+        as.numeric(
+          xy[1, 2]
+        )
+      )
+      
+      
+      bbox_local <- sf::st_bbox(
+        c(
+          xmin = x - half_m,
+          ymin = y - half_m,
+          xmax = x + half_m,
+          ymax = y + half_m
+        ),
+        crs = sf::st_crs(
+          local_crs
+        )
+      )
+      
+      
+      sq <- sf::st_as_sfc(
+        bbox_local
+      ) |>
+        sf::st_transform(
+          4326
+        )
+      
+      
+      sf::st_sf(
+        place = sites$place[i],
+        width_miles = width_miles,
+        geometry = sq
+      )
+    }
+  )
+  
+  
+  dplyr::bind_rows(
+    boxes
+  )
+}
+
+site_population_timeseries <- function(
+    fb_data,
+    sites,
+    width_miles = 12,
+    source_tz = data_tz,
+    output_tz = tzone
+) {
+  boxes <- make_site_boxes(sites, width_miles = width_miles)
+
+  pts <- sf::st_as_sf(
+    fb_data,
+    coords = c("longitude", "latitude"),
+    crs = 4326,
+    remove = FALSE
+  )
+
+  joined <- sf::st_join(
+    pts,
+    boxes["place"],
+    join = sf::st_within,
+    left = FALSE
+  )
+
+  joined |>
+    sf::st_drop_geometry() |>
+    dplyr::group_by(place, ds, hour) |>
+    dplyr::summarise(
+      net_users = sum(n_difference, na.rm = TRUE),
+      crisis_users = sum(n_crisis, na.rm = TRUE),
+      tiles_with_data = sum(!is.na(n_difference)),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(
+      window_time = lubridate::ymd_hm(
+        paste(as.character(ds), hour),
+        tz = source_tz
+      ) |>
+        lubridate::with_tz(output_tz)
+    )
+}
+
+site_population_summary <- function(
+    fb_data,
+    sites,
+    ds,
+    hour,
+    width_miles = 12
+) {
+  ts <- site_population_timeseries(
+    fb_data = fb_data,
+    sites = sites,
+    width_miles = width_miles
+  )
+
+  ts |>
+    dplyr::filter(
+      as.character(ds) == as.character(.env$ds),
+      hour == .env$hour
+    )
+}
+
 
 ####----- LOADING DATA -----
 

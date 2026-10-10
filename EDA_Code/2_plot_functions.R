@@ -1,16 +1,58 @@
-shared_limits <- function(col, symmetric = FALSE,
-                          ds1 = first_ds, hour1 = first_hour,
-                          ds2 = latest_ds, hour2 = latest_hour) {
+shared_limits <- function(
+    col,
+    symmetric = FALSE,
+    ds1 = first_ds,
+    hour1 = first_hour,
+    ds2 = latest_ds,
+    hour2 = latest_hour,
+    lon_limits_use = NULL,
+    lat_limits_use = NULL
+) {
   if (!col %in% names(tiles_3857)) return(NULL)
-  v <- tiles_3857 |>
-    dplyr::filter((ds == ds1 & hour == hour1) | (ds == ds2 & hour == hour2),
-                  dplyr::between(longitude, lon_limits[1], lon_limits[2]),
-                  dplyr::between(latitude,  lat_limits[1], lat_limits[2])) |>
+  
+  d <- tiles_3857 |>
+    dplyr::filter(
+      (ds == ds1 & hour == hour1) |
+        (ds == ds2 & hour == hour2)
+    )
+  
+  if (!is.null(lon_limits_use)) {
+    d <- d |>
+      dplyr::filter(
+        dplyr::between(
+          longitude,
+          lon_limits_use[1],
+          lon_limits_use[2]
+        )
+      )
+  }
+  
+  if (!is.null(lat_limits_use)) {
+    d <- d |>
+      dplyr::filter(
+        dplyr::between(
+          latitude,
+          lat_limits_use[1],
+          lat_limits_use[2]
+        )
+      )
+  }
+  
+  v <- d |>
     dplyr::pull(.data[[col]])
+  
   v <- v[is.finite(v)]
+  
   if (!length(v)) return(NULL)
+  
   r <- range(v, na.rm = TRUE)
-  if (symmetric) { m <- max(abs(r)); c(-m, m) } else r
+  
+  if (symmetric) {
+    m <- max(abs(r))
+    c(-m, m)
+  } else {
+    r
+  }
 }
 
 population_plot <- function(
@@ -27,15 +69,16 @@ population_plot <- function(
     labels = NULL,
     label_angles = NULL,
     highway_detail = c("none", "major", "secondary", "all"),
-    disaster_type = NULL, # "fire", "earthquake"
-    disaster_limits = NULL
+    disaster_type = NULL, # "fire", "earthquake", "flood", "hurricane"
+    disaster_limits = NULL,
+    disaster_config = NULL
 ) {
   
   metric <- match.arg(metric)
   highway_detail <- match.arg(highway_detail)
   # If using match.arg inside, handle NULL safely like this:
   if (!is.null(disaster_type)) {
-    disaster_type <- match.arg(disaster_type, c("fire", "earthquake"))
+    disaster_type <- match.arg(disaster_type, c("fire", "earthquake", "flood", "hurricane"))
   }
   # ------------------------------------------------------------
   # Select coloured column
@@ -147,12 +190,44 @@ population_plot <- function(
     )
     
     # Download OpenStreetMap / CartoDB basemap
-    osm <- get_tiles(
-      pts_sf,
-      provider = "CartoDB.Voyager",
+    plot_zoom <- if (exists("fit_zoom", mode = "function")) {
+      fit_zoom(lon_limits, lat_limits, zoom)
+    } else {
+      zoom
+    }
+    
+    carto_key <- Sys.getenv("CARTO_API_KEY")
+    
+    carto_provider <- if (
+      nzchar(carto_key) &&
+      exists("create_provider", where = asNamespace("maptiles"), inherits = FALSE)
+    ) {
+      maptiles::create_provider(
+        name = "CARTO.VoyagerNoLabels",
+        url = paste0(
+          "https://{s}.basemaps.cartocdn.com/rastertiles/",
+          "voyager_nolabels/{z}/{x}/{y}{r}.png?key=",
+          carto_key
+        ),
+        sub = c("a", "b", "c", "d"),
+        citation = "© OpenStreetMap contributors © CARTO"
+      )
+    } else {
+      "CartoDB.VoyagerNoLabels"
+    }
+    
+    tile_args <- list(
+      x = pts_sf,
+      provider = carto_provider,
       crop = TRUE,
-      zoom = zoom
+      zoom = plot_zoom
     )
+    
+    if (exists("tile_cache_dir", inherits = TRUE)) {
+      tile_args$cachedir <- get("tile_cache_dir", inherits = TRUE)
+    }
+    
+    osm <- do.call(maptiles::get_tiles, tile_args)
     
     # ----------------------------------------------------------
     # Convert bounding box to EPSG:3857
@@ -324,23 +399,35 @@ population_plot <- function(
   fill_scale <- if (metric == "difference") {
     
     ggplot2::scale_fill_gradient2(
-      low = "blue",
-      mid = "grey",
-      high = "red",
+      low = "darkred",
+      mid = "white",
+      high = "darkgreen",
       limits = lims,
       midpoint = 0,
-      name = "Users (crisis - baseline)"
+      name = "Users (crisis - baseline)",
+      guide = ggplot2::guide_colorbar(
+        direction = "horizontal",
+        order = 1,
+        title.position = "top",
+        position = "bottom"
+      )
     )
     
   } else if (metric == "crisis") {
     
     ggplot2::scale_fill_gradient(
       trans = "log10",
-      low = "blue",
-      high = "red",
+      low = "darkred",
+      high = "darkblue",
       limits = lims,
       labels = scales::label_comma(),
-      name = "Users"
+      name = "Users",
+      guide = ggplot2::guide_colorbar(
+        direction = "horizontal",
+        order = 1,
+        title.position = "top",
+        position = "bottom"
+      )
     )
     
   } else {
@@ -352,7 +439,13 @@ population_plot <- function(
       limits = c(-4, 4),
       oob = scales::squish,
       na.value = "grey60",
-      name = "z-score (crisis vs. baseline)"
+      name = "z-score (crisis vs. baseline)",
+      guide = ggplot2::guide_colorbar(
+        direction = "horizontal",
+        order = 1,
+        title.position = "top",
+        position = "bottom"
+      )
     )
   }
   
@@ -380,6 +473,17 @@ population_plot <- function(
       linewidth = 0.1,
       alpha = 1
     )
+  
+  
+  # ------------------------------------------------------------
+  # Apply population fill scale NOW, before hurricane layers.
+  #
+  # The hurricane helper starts a second fill scale with
+  # ggnewscale::new_scale_fill() for Saffir-Simpson markers.
+  # ------------------------------------------------------------
+  p1 <- p1 +
+    fill_scale
+  
   # ------------------------------------------------------------
   # Disaster-specific layer
   #
@@ -389,8 +493,16 @@ population_plot <- function(
   
   if (!is.null(disaster_type)) {
     
-    source(paste0("3_", disaster_type, "_functions.R"),
-           local = environment()
+    disaster_file <- paste0("3_", disaster_type, "_functions.R")
+    eda_file <- here::here("EDA_Code", disaster_file)
+    
+    if (file.exists(eda_file)) {
+      disaster_file <- eda_file
+    }
+    
+    source(
+      disaster_file,
+      local = environment()
     )
   }
   
@@ -441,8 +553,6 @@ population_plot <- function(
   # ------------------------------------------------------------
   
   p1 <- p1 +
-    fill_scale +
-    
     ggplot2::coord_sf(
       crs = sf::st_crs(3857),
       xlim = xlim,
@@ -456,14 +566,9 @@ population_plot <- function(
   
   p1 <- p1 +
     ggplot2::guides(
-      fill = ggplot2::guide_colorbar(
-        direction = "horizontal",
-        order = 1,
-        title.position = "top"
-      ),
       color = ggplot2::guide_legend(
         direction = "horizontal",
-        order = 2
+        order = 4
       )
     )
   
