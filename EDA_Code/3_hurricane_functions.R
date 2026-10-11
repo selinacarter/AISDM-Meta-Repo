@@ -557,7 +557,9 @@ hurricane_city_layers <- function(
     p,
     cities,
     default_dx_m = 25000,
-    default_dy_m = 20000
+    default_dy_m = 20000,
+    show_points = TRUE,
+    label_size = 3
 ) {
   if (is.null(cities) || !nrow(cities)) {
     return(p)
@@ -596,16 +598,24 @@ hurricane_city_layers <- function(
   lab$label_x <- lab$x + lab$label_dx_m
   lab$label_y <- lab$y + lab$label_dy_m
   
-  p +
-    ggplot2::geom_sf(
-      data = pts,
-      shape = 21,
-      fill = "black",
-      colour = "white",
-      size = 2,
-      stroke = 0.5,
-      inherit.aes = FALSE
-    ) +
+  p_out <- p
+  
+  # Optional city dots
+  if (show_points) {
+    p_out <- p_out +
+      ggplot2::geom_sf(
+        data = pts,
+        shape = 21,
+        fill = "black",
+        colour = "white",
+        size = 2,
+        stroke = 0.5,
+        inherit.aes = FALSE
+      )
+  }
+  
+  # Always keep arrows and city labels
+  p_out +
     ggplot2::geom_segment(
       data = lab,
       ggplot2::aes(
@@ -629,7 +639,7 @@ hurricane_city_layers <- function(
         y = label_y,
         label = place
       ),
-      size = 3,
+      size = label_size,
       fontface = "bold",
       fill = "white",
       colour = "black",
@@ -637,6 +647,118 @@ hurricane_city_layers <- function(
       inherit.aes = FALSE
     )
 }
+
+# ------------------------------------------------------------------------------
+# U.S. state-border helper
+# ------------------------------------------------------------------------------
+
+hurricane_state_borders <- function(
+    map_bbox = NULL
+) {
+  if (!requireNamespace("maps", quietly = TRUE)) {
+    warning(
+      "Package `maps` is required for state borders; layer omitted.",
+      call. = FALSE
+    )
+    return(NULL)
+  }
+  
+  tryCatch({
+    # Get raw state boundary coordinates from maps.
+    # We build LINESTRING geometries manually rather than converting the
+    # maps object with st_as_sf(), which can try to create invalid polygons.
+    states_map <- maps::map(
+      "state",
+      plot = FALSE,
+      fill = FALSE,
+      boundary = FALSE,
+      interior = TRUE
+    )
+    
+    xy <- data.frame(
+      x = states_map$x,
+      y = states_map$y
+    )
+    
+    # NA rows separate independent state-border line segments.
+    separator <- is.na(xy$x) | is.na(xy$y)
+    segment_id <- cumsum(separator)
+    
+    xy <- xy[!separator, , drop = FALSE]
+    segment_id <- segment_id[!separator]
+    
+    split_xy <- split(
+      xy,
+      segment_id
+    )
+    
+    # Keep only valid line segments with at least two coordinates.
+    split_xy <- split_xy[
+      vapply(
+        split_xy,
+        nrow,
+        integer(1)
+      ) >= 2
+    ]
+    
+    state_lines <- sf::st_sfc(
+      lapply(
+        split_xy,
+        function(d) {
+          sf::st_linestring(
+            as.matrix(
+              d[, c("x", "y"), drop = FALSE]
+            )
+          )
+        }
+      ),
+      crs = 4326
+    )
+    
+    states_sf <- sf::st_sf(
+      geometry = state_lines
+    )
+    
+    # `map_bbox` is longitude/latitude because it is also passed directly
+    # to OSM/Overpass. Crop while the state lines are still in EPSG:4326.
+    if (!is.null(map_bbox)) {
+      crop_box <- sf::st_bbox(
+        c(
+          xmin = unname(map_bbox["xmin"]),
+          ymin = unname(map_bbox["ymin"]),
+          xmax = unname(map_bbox["xmax"]),
+          ymax = unname(map_bbox["ymax"])
+        ),
+        crs = sf::st_crs(4326)
+      )
+      
+      states_sf <- suppressWarnings(
+        sf::st_crop(
+          states_sf,
+          crop_box
+        )
+      )
+    }
+    
+    # Transform only after cropping so the degree-based bbox is interpreted
+    # correctly; the plot itself uses Web Mercator.
+    states_sf <- sf::st_transform(
+      states_sf,
+      3857
+    )
+    
+    states_sf
+    
+  }, error = function(e) {
+    warning(
+      "State borders could not be built: ",
+      conditionMessage(e),
+      call. = FALSE
+    )
+    NULL
+  })
+}
+
 
 # ------------------------------------------------------------------------------
 # Main overlay
@@ -746,6 +868,11 @@ add_hurricane_layers <- function(
     NULL
   )
   
+  show_cities <- get_cfg(
+    "show_cities",
+    TRUE
+  )
+  
   show_storm_legend <- get_cfg(
     "show_storm_legend",
     TRUE
@@ -759,6 +886,31 @@ add_hurricane_layers <- function(
   show_context_legend <- get_cfg(
     "show_context_legend",
     TRUE
+  )
+  
+  show_city_points <- get_cfg(
+    "show_city_points",
+    TRUE
+  )
+  
+  city_label_size <- get_cfg(
+    "city_label_size",
+    3
+  )
+  
+  show_state_borders <- get_cfg(
+    "show_state_borders",
+    FALSE
+  )
+  
+  state_border_colour <- get_cfg(
+    "state_border_colour",
+    "grey15"
+  )
+  
+  state_border_linewidth <- get_cfg(
+    "state_border_linewidth",
+    0.45
   )
   
   map_time_utc <- if (
@@ -786,8 +938,9 @@ add_hurricane_layers <- function(
   # recently-added layer. We restore that layer near the end so the final order
   # is:
   #
-  #   basemap -> shaded terrain -> rivers/roads -> storm paths/cone
-  #   -> BING POPULATION -> city/current-center annotations
+  #   basemap -> shaded terrain -> rivers/storm paths/cone
+  #   -> BING POPULATION -> state borders/roads
+  #   -> city/current-center annotations
   #
   # This makes the Bing layer the second-to-top visual group while retaining
   # enough transparency to read the contextual layers underneath.
@@ -1061,15 +1214,6 @@ add_hurricane_layers <- function(
           
           observed_line_sf <- obs_line
           
-          p1 <- p1 +
-            ggplot2::geom_sf(
-              data = obs_line,
-              ggplot2::aes(colour = "Observed best track"),
-              linewidth = 0.8,
-              inherit.aes = FALSE,
-              show.legend = "line"
-            )
-          
         }
         
         current_center <- obs_sf |>
@@ -1190,6 +1334,34 @@ add_hurricane_layers <- function(
   }
   
   # --------------------------------------------------------------------------
+  # Draw U.S. state borders ABOVE the Bing tiles.
+  # --------------------------------------------------------------------------
+  
+  if (
+    show_state_borders &&
+    !is.null(map_bbox)
+  ) {
+    state_borders_sf <- hurricane_state_borders(
+      map_bbox = map_bbox
+    )
+    
+    if (
+      !is.null(state_borders_sf) &&
+      nrow(state_borders_sf) > 0
+    ) {
+      p1 <- p1 +
+        ggplot2::geom_sf(
+          data = state_borders_sf,
+          colour = state_border_colour,
+          linewidth = state_border_linewidth,
+          alpha = 0.9,
+          inherit.aes = FALSE,
+          show.legend = FALSE
+        )
+    }
+  }
+  
+  # --------------------------------------------------------------------------
   # Draw roads ABOVE the Bing tiles.
   # --------------------------------------------------------------------------
   
@@ -1259,9 +1431,11 @@ add_hurricane_layers <- function(
       p1 <- p1 +
         ggplot2::geom_sf(
           data = observed_line_sf,
-          ggplot2::aes(colour = "Observed best track"),
+          ggplot2::aes(
+            colour = "Observed best track",
+            linetype = "Observed best track"
+          ),
           linewidth = 0.8,
-          linetype = "solid",
           inherit.aes = FALSE,
           show.legend = TRUE
         )
@@ -1305,9 +1479,11 @@ add_hurricane_layers <- function(
       p1 <- p1 +
         ggplot2::geom_sf(
           data = forecast_line_sf,
-          ggplot2::aes(colour = "Official forecast track"),
+          ggplot2::aes(
+            colour = "Official forecast track",
+            linetype = "Official forecast track"
+          ),
           linewidth = 0.9,
-          linetype = "dashed",
           inherit.aes = FALSE,
           show.legend = TRUE
         )
@@ -1347,40 +1523,262 @@ add_hurricane_layers <- function(
     !is.null(observed_points_sf) ||
     !is.null(forecast_points_sf)
   ) {
+    
+    # Build legends dynamically from only the storm information that is
+    # actually visible on the current map.
+    category_values_seen <- character(0)
+    wind_values_seen <- numeric(0)
+    
+    if (
+      !is.null(observed_points_sf) &&
+      nrow(observed_points_sf) > 0
+    ) {
+      category_values_seen <- c(
+        category_values_seen,
+        as.character(observed_points_sf$category)
+      )
+      
+      wind_values_seen <- c(
+        wind_values_seen,
+        observed_points_sf$wind_kt
+      )
+    }
+    
+    if (
+      !is.null(forecast_points_sf) &&
+      nrow(forecast_points_sf) > 0
+    ) {
+      category_values_seen <- c(
+        category_values_seen,
+        as.character(forecast_points_sf$category)
+      )
+      
+      wind_values_seen <- c(
+        wind_values_seen,
+        forecast_points_sf$wind_kt
+      )
+    }
+    
+    # Preserve Saffir-Simpson ordering while dropping unused categories.
+    categories_seen <- SS_LEVELS[
+      SS_LEVELS %in% unique(
+        category_values_seen[
+          !is.na(category_values_seen)
+        ]
+      )
+    ]
+    
+    wind_values_seen <- sort(
+      unique(
+        wind_values_seen[
+          is.finite(wind_values_seen)
+        ]
+      )
+    )
+    
+    # Compact 10-kt legend breaks spanning only winds present on this map.
+    wind_breaks <- NULL
+    
+    if (length(wind_values_seen) > 0) {
+      wind_min <- min(wind_values_seen)
+      wind_max <- max(wind_values_seen)
+      
+      wind_breaks <- seq(
+        floor(wind_min / 10) * 10,
+        ceiling(wind_max / 10) * 10,
+        by = 10
+      )
+      
+      wind_breaks <- wind_breaks[
+        wind_breaks >= wind_min &
+          wind_breaks <= wind_max
+      ]
+      
+      if (!length(wind_breaks)) {
+        wind_breaks <- wind_values_seen
+      }
+    }
+    
     if (show_storm_legend) {
+      # ----------------------------------------------------------------------
+      # Combined right-side storm legend
+      #
+      # A single custom guide is used for both storm intensity and max wind.
+      # This lets the two storm columns sit side-by-side on the RIGHT while
+      # leaving `legend.box = "vertical"` available for the population and
+      # observed/forecast legends at the BOTTOM.
+      # ----------------------------------------------------------------------
+      
+      n_storm <- length(categories_seen)
+      n_wind <- length(wind_breaks)
+      legend_rows <- max(n_storm, n_wind) + 1L
+      
+      storm_pad <- legend_rows - 1L - n_storm
+      wind_pad <- legend_rows - 1L - n_wind
+      
+      storm_keys <- c(
+        "storm_header",
+        paste0("storm_", seq_len(n_storm)),
+        if (storm_pad > 0) paste0("storm_blank_", seq_len(storm_pad))
+      )
+      
+      wind_keys <- c(
+        "wind_header",
+        paste0("wind_", seq_len(n_wind)),
+        if (wind_pad > 0) paste0("wind_blank_", seq_len(wind_pad))
+      )
+      
+      legend_keys <- c(
+        storm_keys,
+        wind_keys
+      )
+      
+      # Plotmath labels allow the two column headings to be bold.
+      legend_label_text <- c(
+        'bold("Storm intensity")',
+        paste0('"', categories_seen, '"'),
+        rep('""', storm_pad),
+        'bold("Max wind (kt)")',
+        as.character(wind_breaks),
+        rep('""', wind_pad)
+      )
+      
+      legend_labels <- parse(
+        text = legend_label_text
+      )
+      
+      # Match the visual size range used by the actual wind markers.
+      if (n_wind == 0) {
+        wind_legend_sizes <- numeric(0)
+      } else if (n_wind == 1) {
+        wind_legend_sizes <- 3.6
+      } else {
+        wind_legend_sizes <- 1.8 +
+          (
+            (wind_breaks - min(wind_breaks)) /
+              (max(wind_breaks) - min(wind_breaks))
+          ) * (5.5 - 1.8)
+      }
+      
+      legend_shapes <- c(
+        NA,
+        rep(21, n_storm),
+        rep(NA, storm_pad),
+        NA,
+        rep(23, n_wind),
+        rep(NA, wind_pad)
+      )
+      
+      legend_fills <- c(
+        NA,
+        unname(SS_COLORS[categories_seen]),
+        rep(NA, storm_pad),
+        NA,
+        rep("white", n_wind),
+        rep(NA, wind_pad)
+      )
+      
+      legend_colours <- c(
+        NA,
+        rep("grey20", n_storm),
+        rep(NA, storm_pad),
+        NA,
+        rep("red3", n_wind),
+        rep(NA, wind_pad)
+      )
+      
+      legend_sizes <- c(
+        0,
+        rep(4, n_storm),
+        rep(0, storm_pad),
+        0,
+        wind_legend_sizes,
+        rep(0, wind_pad)
+      )
+      
+      legend_alpha <- c(
+        0,
+        rep(1, n_storm),
+        rep(0, storm_pad),
+        0,
+        rep(1, n_wind),
+        rep(0, wind_pad)
+      )
+      
+      legend_df <- data.frame(
+        x = rep(0, length(legend_keys)),
+        y = rep(0, length(legend_keys)),
+        storm_legend_key = factor(
+          legend_keys,
+          levels = legend_keys
+        )
+      )
+      
+      # Keep the real fill and size mappings on the storm points, but suppress
+      # their native guides. The custom shape guide below represents both.
       p1 <- p1 +
         ggplot2::scale_fill_manual(
           values = SS_COLORS,
-          limits = SS_LEVELS,
-          drop = FALSE,
-          name = "Storm intensity",
-          guide = ggplot2::guide_legend(
-            override.aes = list(
-              shape = 21,
-              size = 4
-            ),
-            order = 1,
-            position = "right"
-          )
+          breaks = categories_seen,
+          drop = TRUE,
+          guide = "none"
         ) +
         ggplot2::scale_size_continuous(
           range = c(1.8, 5.5),
-          name = "Max wind (kt)",
+          breaks = wind_breaks,
+          guide = "none"
+        ) +
+        ggplot2::geom_point(
+          data = legend_df,
+          ggplot2::aes(
+            x = x,
+            y = y,
+            shape = storm_legend_key
+          ),
+          alpha = 0,
+          size = 0.1,
+          inherit.aes = FALSE,
+          show.legend = TRUE
+        ) +
+        ggplot2::scale_shape_manual(
+          values = stats::setNames(
+            rep(21, length(legend_keys)),
+            legend_keys
+          ),
+          breaks = legend_keys,
+          labels = legend_labels,
+          name = NULL,
           guide = ggplot2::guide_legend(
-            order = 2,
-            position = "right"
+            ncol = 2,
+            byrow = FALSE,
+            direction = "vertical",
+            order = 1,
+            position = "right",
+            override.aes = list(
+              shape = legend_shapes,
+              fill = legend_fills,
+              colour = legend_colours,
+              size = legend_sizes,
+              alpha = legend_alpha,
+              stroke = 0.7
+            )
           )
+        ) +
+        ggplot2::theme(
+          # Bottom guides remain vertically stacked.
+          legend.box = "vertical"
         )
     } else {
       p1 <- p1 +
         ggplot2::scale_fill_manual(
           values = SS_COLORS,
-          limits = SS_LEVELS,
-          drop = FALSE,
+          breaks = categories_seen,
+          drop = TRUE,
           guide = "none"
         ) +
         ggplot2::scale_size_continuous(
           range = c(1.8, 5.5),
+          breaks = wind_breaks,
           guide = "none"
         )
     }
@@ -1390,26 +1788,45 @@ add_hurricane_layers <- function(
   # City pointers remain the top annotation group.
   # --------------------------------------------------------------------------
   
-  p1 <- hurricane_city_layers(
-    p1,
-    cities = cities
-  )
+  if (show_cities) {
+    p1 <- hurricane_city_layers(
+      p1,
+      cities = cities,
+      show_points = show_city_points,
+      label_size = city_label_size
+    )
+  }
   
   # --------------------------------------------------------------------------
   # Combined feature legend.
   # --------------------------------------------------------------------------
   
   if (length(legend_values) > 0) {
+    
+    path_linetypes <- c(
+      "Observed best track" = "solid",
+      "Official forecast track" = "dashed"
+    )
+    
+    path_breaks <- names(legend_values)
+    
     p1 <- p1 +
       ggplot2::scale_colour_manual(
         name = NULL,
         values = legend_values,
-        breaks = names(legend_values),
+        breaks = path_breaks,
+        guide = "none"
+      ) +
+      ggplot2::scale_linetype_manual(
+        name = NULL,
+        values = path_linetypes,
+        breaks = path_breaks,
         guide = ggplot2::guide_legend(
           direction = "horizontal",
           order = 4,
           position = "bottom",
           override.aes = list(
+            colour = unname(legend_values[path_breaks]),
             linewidth = 0.9
           )
         )

@@ -562,15 +562,12 @@ population_plot <- function(
   
   # ------------------------------------------------------------
   # Legends
+  #
+  # Disaster-specific legend styling is handled by the relevant
+  # 3_*_functions.R script. In particular, hurricane path legends
+  # must preserve both colour and linetype so the forecast key stays
+  # dashed rather than being recreated as a colour-only solid line.
   # ------------------------------------------------------------
-  
-  p1 <- p1 +
-    ggplot2::guides(
-      color = ggplot2::guide_legend(
-        direction = "horizontal",
-        order = 4
-      )
-    )
   
   # ------------------------------------------------------------
   # City labels and arrows
