@@ -616,18 +616,33 @@ hurricane_city_layers <- function(
   
   # Always keep arrows and city labels
   p_out +
+    # Black arrow outline
     ggplot2::geom_segment(
       data = lab,
       ggplot2::aes(
-        x = label_x,
-        y = label_y,
-        xend = x,
-        yend = y
+        x = label_x, y = label_y,
+        xend = x, yend = y
       ),
       colour = "black",
-      linewidth = 0.5,
+      linewidth = 1.5,
       arrow = grid::arrow(
-        length = grid::unit(0.15, "cm"),
+        length = grid::unit(0.17, "cm"),
+        type = "closed"
+      ),
+      inherit.aes = FALSE
+    ) +
+    
+    # Lemon-yellow arrow interior
+    ggplot2::geom_segment(
+      data = lab,
+      ggplot2::aes(
+        x = label_x, y = label_y,
+        xend = x, yend = y
+      ),
+      colour = "#F2E85C",
+      linewidth = 0.75,
+      arrow = grid::arrow(
+        length = grid::unit(0.17, "cm"),
         type = "closed"
       ),
       inherit.aes = FALSE
@@ -881,6 +896,22 @@ add_hurricane_layers <- function(
   show_path_legend <- get_cfg(
     "show_path_legend",
     TRUE
+  )
+  
+  # Plot storm intensity/wind markers independently of the paths.
+  show_storm_markers <- get_cfg(
+    "show_storm_markers",
+    TRUE
+  )
+  
+  # Figure-specific path legend placement and ordering.
+  path_legend_position <- get_cfg(
+    "path_legend_position",
+    "right"
+  )
+  path_legend_order <- get_cfg(
+    "path_legend_order",
+    2
   )
   
   show_context_legend <- get_cfg(
@@ -1407,10 +1438,10 @@ add_hurricane_layers <- function(
   # --------------------------------------------------------------------------
   
   if (
-    !is.null(observed_line_sf) ||
-    !is.null(observed_points_sf) ||
-    !is.null(forecast_line_sf) ||
-    !is.null(forecast_points_sf)
+    show_storm_markers && (
+      !is.null(observed_points_sf) ||
+      !is.null(forecast_points_sf)
+    )
   ) {
     if (!requireNamespace("ggnewscale", quietly = TRUE)) {
       stop(
@@ -1454,6 +1485,7 @@ add_hurricane_layers <- function(
   }
   
   if (
+    show_storm_markers &&
     !is.null(observed_points_sf) &&
     nrow(observed_points_sf) > 0
   ) {
@@ -1502,6 +1534,7 @@ add_hurricane_layers <- function(
   }
   
   if (
+    show_storm_markers &&
     !is.null(forecast_points_sf) &&
     nrow(forecast_points_sf) > 0
   ) {
@@ -1520,8 +1553,10 @@ add_hurricane_layers <- function(
   }
   
   if (
-    !is.null(observed_points_sf) ||
-    !is.null(forecast_points_sf)
+    show_storm_markers && (
+      !is.null(observed_points_sf) ||
+      !is.null(forecast_points_sf)
+    )
   ) {
     
     # Build legends dynamically from only the storm information that is
@@ -1600,122 +1635,61 @@ add_hurricane_layers <- function(
     }
     
     if (show_storm_legend) {
-      # ----------------------------------------------------------------------
-      # Combined right-side storm legend
-      #
-      # A single custom guide is used for both storm intensity and max wind.
-      # This lets the two storm columns sit side-by-side on the RIGHT while
-      # leaving `legend.box = "vertical"` available for the population and
-      # observed/forecast legends at the BOTTOM.
-      # ----------------------------------------------------------------------
-      
+      # One-column right legend: intensity above maximum wind.
       n_storm <- length(categories_seen)
       n_wind <- length(wind_breaks)
-      legend_rows <- max(n_storm, n_wind) + 1L
-      
-      storm_pad <- legend_rows - 1L - n_storm
-      wind_pad <- legend_rows - 1L - n_wind
-      
-      storm_keys <- c(
-        "storm_header",
-        paste0("storm_", seq_len(n_storm)),
-        if (storm_pad > 0) paste0("storm_blank_", seq_len(storm_pad))
-      )
-      
-      wind_keys <- c(
-        "wind_header",
-        paste0("wind_", seq_len(n_wind)),
-        if (wind_pad > 0) paste0("wind_blank_", seq_len(wind_pad))
-      )
       
       legend_keys <- c(
-        storm_keys,
-        wind_keys
+        "storm_header",
+        paste0("storm_", seq_len(n_storm)),
+        "wind_header",
+        paste0("wind_", seq_len(n_wind))
       )
       
-      # Plotmath labels allow the two column headings to be bold.
-      legend_label_text <- c(
+      legend_labels <- parse(text = c(
         'bold("Storm intensity")',
         paste0('"', categories_seen, '"'),
-        rep('""', storm_pad),
         'bold("Max wind (kt)")',
-        as.character(wind_breaks),
-        rep('""', wind_pad)
-      )
+        as.character(wind_breaks)
+      ))
       
-      legend_labels <- parse(
-        text = legend_label_text
-      )
-      
-      # Match the visual size range used by the actual wind markers.
       if (n_wind == 0) {
         wind_legend_sizes <- numeric(0)
       } else if (n_wind == 1) {
-        wind_legend_sizes <- 3.6
+        wind_legend_sizes <- 3.2
       } else {
-        wind_legend_sizes <- 1.8 +
-          (
-            (wind_breaks - min(wind_breaks)) /
-              (max(wind_breaks) - min(wind_breaks))
-          ) * (5.5 - 1.8)
+        wind_legend_sizes <- 1.6 +
+          (wind_breaks - min(wind_breaks)) /
+          (max(wind_breaks) - min(wind_breaks)) * 3.0
       }
       
       legend_shapes <- c(
-        NA,
-        rep(21, n_storm),
-        rep(NA, storm_pad),
-        NA,
-        rep(23, n_wind),
-        rep(NA, wind_pad)
+        NA, rep(21, n_storm),
+        NA, rep(23, n_wind)
       )
-      
       legend_fills <- c(
-        NA,
-        unname(SS_COLORS[categories_seen]),
-        rep(NA, storm_pad),
-        NA,
-        rep("white", n_wind),
-        rep(NA, wind_pad)
+        NA, unname(SS_COLORS[categories_seen]),
+        NA, rep("white", n_wind)
       )
-      
       legend_colours <- c(
-        NA,
-        rep("grey20", n_storm),
-        rep(NA, storm_pad),
-        NA,
-        rep("red3", n_wind),
-        rep(NA, wind_pad)
+        NA, rep("grey20", n_storm),
+        NA, rep("red3", n_wind)
       )
-      
       legend_sizes <- c(
-        0,
-        rep(4, n_storm),
-        rep(0, storm_pad),
-        0,
-        wind_legend_sizes,
-        rep(0, wind_pad)
+        0, rep(3.2, n_storm),
+        0, wind_legend_sizes
       )
-      
       legend_alpha <- c(
-        0,
-        rep(1, n_storm),
-        rep(0, storm_pad),
-        0,
-        rep(1, n_wind),
-        rep(0, wind_pad)
+        0, rep(1, n_storm),
+        0, rep(1, n_wind)
       )
       
       legend_df <- data.frame(
         x = rep(0, length(legend_keys)),
         y = rep(0, length(legend_keys)),
-        storm_legend_key = factor(
-          legend_keys,
-          levels = legend_keys
-        )
+        storm_legend_key = factor(legend_keys, levels = legend_keys)
       )
       
-      # Keep the real fill and size mappings on the storm points, but suppress
-      # their native guides. The custom shape guide below represents both.
       p1 <- p1 +
         ggplot2::scale_fill_manual(
           values = SS_COLORS,
@@ -1730,11 +1704,7 @@ add_hurricane_layers <- function(
         ) +
         ggplot2::geom_point(
           data = legend_df,
-          ggplot2::aes(
-            x = x,
-            y = y,
-            shape = storm_legend_key
-          ),
+          ggplot2::aes(x = x, y = y, shape = storm_legend_key),
           alpha = 0,
           size = 0.1,
           inherit.aes = FALSE,
@@ -1742,18 +1712,21 @@ add_hurricane_layers <- function(
         ) +
         ggplot2::scale_shape_manual(
           values = stats::setNames(
-            rep(21, length(legend_keys)),
-            legend_keys
+            rep(21, length(legend_keys)), legend_keys
           ),
           breaks = legend_keys,
           labels = legend_labels,
           name = NULL,
           guide = ggplot2::guide_legend(
-            ncol = 2,
-            byrow = FALSE,
+            ncol = 1,
             direction = "vertical",
             order = 1,
             position = "right",
+            theme = ggplot2::theme(
+              legend.text = ggplot2::element_text(size = 7.5),
+              legend.key.height = grid::unit(0.33, "cm"),
+              legend.key.width = grid::unit(0.65, "cm")
+            ),
             override.aes = list(
               shape = legend_shapes,
               fill = legend_fills,
@@ -1764,10 +1737,7 @@ add_hurricane_layers <- function(
             )
           )
         ) +
-        ggplot2::theme(
-          # Bottom guides remain vertically stacked.
-          legend.box = "vertical"
-        )
+        ggplot2::theme(legend.box = "vertical")
     } else {
       p1 <- p1 +
         ggplot2::scale_fill_manual(
@@ -1822,9 +1792,20 @@ add_hurricane_layers <- function(
         values = path_linetypes,
         breaks = path_breaks,
         guide = ggplot2::guide_legend(
-          direction = "horizontal",
-          order = 4,
-          position = "bottom",
+          ncol = if (path_legend_position == "bottom") 2 else 1,
+          byrow = TRUE,
+          direction = if (path_legend_position == "bottom") {
+            "horizontal"
+          } else {
+            "vertical"
+          },
+          order = path_legend_order,
+          position = path_legend_position,
+          theme = ggplot2::theme(
+            legend.text = ggplot2::element_text(size = 7.5),
+            legend.key.height = grid::unit(0.33, "cm"),
+            legend.key.width = grid::unit(0.75, "cm")
+          ),
           override.aes = list(
             colour = unname(legend_values[path_breaks]),
             linewidth = 0.9

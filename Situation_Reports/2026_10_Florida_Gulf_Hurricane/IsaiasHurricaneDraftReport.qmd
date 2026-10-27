@@ -2,9 +2,11 @@
 title: "Hurricane Isaias: Facebook Data Situation Report"
 subtitle: |
   [NSF AI-SDM](https://www.cmu.edu/ai-sdm/) and Meta AI for Good\
-  Draft hurricane situation report
-author:
-  - Meta Disaster Analysts
+  Report Date: October 15, 2026 · Latest Data: October 14, 2026
+authors:
+  - "Bruck Setu\u2003\u2003\u2003\u2003Snehil Rayal\u2003\u2003\u2003\u2003Nikita Jayaprakash\u2003\u2003\u2003\u2003Selina Carter"
+bibliography: references.bib
+csl: apa.csl
 format:
   typst:
     papersize: us-letter
@@ -37,6 +39,7 @@ library(elevatr)
 library(osmdata)
 library(here)
 library(maps)
+library(ggrepel)
 
 here::i_am(
   "Situation_Reports/2026_10_Florida_Gulf_Hurricane/IsaiasHurricaneDraftReport.qmd"
@@ -71,6 +74,8 @@ source(
     "2_plot_functions.R"
   )
 )
+
+diff_fill_limits <- c(-1000, 1000)
 ```
 
 ```{r setup-data}
@@ -193,8 +198,8 @@ city_ts <- site_population_timeseries(
 
 first_city <- city_ts |>
   filter(
-    as.character(ds) == event_start_ds,
-    hour == event_start_hour
+    as.character(ds) == statewide_path_ds,
+    hour == statewide_path_hour
   )
 
 places <- cities |>
@@ -266,67 +271,188 @@ legend_theme <- ggplot2::theme(
 )
 ```
 
+## Overview
+
+This report focuses on Hurricane Isaias and population changes along the Florida Gulf Coast and coastal Alabama from **`r first_label` through `r latest_label`**, using Meta's *Facebook Population During Crisis* data. Observations are recorded in eight-hour windows, and each window is compared with a 90-day pre-crisis baseline for the same day of the week. The data represent **Facebook app users** in a given area, not raw population. This analysis focuses on areas where there are more or fewer Facebook users during the crisis than the baseline: four coastal cities (Gulf Shores, AL, Pensacola, FL, Destin, FL, and Panama City Beach, FL) and one inland city, Tuscaloosa, AL.
+
+1. Hurricane Isaias made landfall near Destin, FL, crossing the coast between Pensacola and Panama City Beach, and weakened from a major hurricane to a tropical storm and then a tropical depression as it moved inland toward western Alabama (@fig-regional-context).
+2. All four coastal cities were already **below the 90 day pre-crisis baseline in the first eight-hour window (`r first_label`)** and two of them stayed below it through `r latest_label`, while Gulf Shores, AL and Pensacola, FL made a recovery to above pre-crisis user counts. **Destin had the largest deficit**. (@tbl-places, @fig-ts). **Tuscaloosa showed the opposite pattern**, with an initial influx of Facebook users. (@fig-seq, @fig-ts).
+3. Latest data show that all five cities exhibit signs of returning to their baseline population levels, regardless of whether they experienced an initial population decrease or increase during the crisis (@fig-seq, @fig-ts).
+4. We note that population differences (relative to a 90-day baseline) do not imply large or small raw population counts in each city, and they are not counts of evacuees. The data represent Facebook users with Location Services enabled, not the full resident population. See the Appendix for data caveats.
+
+<!-- ## Key Takeaways -->
+
+<!-- * **Overall pattern:** The pattern is the movement of Facebook users from coastal cities like Gulf Shores, Pensacola, Destin, and Panama City toward inland cities like Tuscaloosa, which initially experienced a growing influx of Facebook users. -->
+
+<!-- * **Gulf Coast (Gulf Shores, Pensacola, Destin, Panama City Beach):** In the first window (Oct. 10, 12am CDT), all four coastal cities were already below the 90-day baseline of net Facebook users (Table 1, Figure 3). -->
+<!--   * **Destin, FL**, where the hurricane made landfall, had the largest deficit of the four cities: 11,966 fewer users than baseline on Oct. 10 at 12am, deepening to 12,977 fewer users 8 hours later, then easing back to 3,208 fewer users by 4pm on Oct. 12th at 4pm (Figure 3). -->
+<!--   * **Panama City Beach, FL** was 8,827 users below baseline on Oct. 10 at 12am, 9,709 users below 8 hours later, and 1,371 users below on Oct. 12th at 4pm. -->
+<!--   * **Gulf Shores, AL** was 7,681 users below baseline on Oct. 10 at 12am, 8,625 below 8 hours later, and 471 below on Oct. 12th at 4pm. -->
+<!--   * **Pensacola, FL** had the smallest deficit of Facebook users and was the only coastal city whose deficit narrowed steadily: 7,352 users below baseline on Oct. 10 at 12am, 6,884 users below 8 hours later, and 540 users below on Oct. 12th at 4pm. -->
+<!--   * Destin, Panama City Beach, and Gulf Shores had their largest user deficits at 8am on Oct. 10th and partially recovered by 4pm on Oct. 12th. None of the four cities have returned to the 90-day baseline. -->
+
+<!-- * **Tuscaloosa, AL:** This west-central Alabama city shows a growing net influx of Facebook users relative to the 90-day baseline (Figure 2, Figure 3). -->
+<!--   * Net users rose from +3,496 on Oct. 10 at 12am (Table 1) to +8,715 8 hours later, but regressed back to +1,045 by 4pm on Oct. 12th (Figure 3). -->
+
 ## Key Takeaways
 
-* **Data period.** The population series spans **`r first_label` through `r latest_label`**, with one observation every eight hours. The regional hurricane-path context figure is shown at **`r context_label`**.
+**Overall pattern:** The pattern is the movement of Facebook users from coastal cities like Gulf Shores, Pensacola, Destin, and Panama City toward inland cities like Tuscaloosa, which initially experienced a growing influx of Facebook users.
 
-* **Population change.** Dark red tiles indicate fewer Facebook users than the historical baseline, dark green tiles indicate more users, and white indicates little or no net change. All detailed maps use a shared symmetric scale.
+```{=typst}
+#pad(x: -1cm)[
+```
 
-* **Storm track.** A solid black line represents the realized NHC best track through the time of each map. The official forecast available at or before that map time is shown as a **red dashed line**.
+```{r}
+#| label: tbl-key-takeaways
+#| tbl-cap: "Summary of Facebook-user population changes relative to the 90-day baseline during Hurricane Isaias."
+#| tbl-colwidths: [18, 16, 15, 15, 36]
 
-* **Impact-area focus.** The detailed analysis focuses on the western Florida Panhandle and coastal Alabama, with city-level summaries centered on **Pensacola, Destin, Panama City Beach, and Mobile**.
+key_takeaways <- tibble(
+  Location = c(
+    "Destin, FL",
+    "Panama City Beach, FL",
+    "Gulf Shores, AL",
+    "Pensacola, FL",
+    "Tuscaloosa, AL"
+  ),
+  `Oct. 10, 12 AM CDT` = c(
+    "-11,966",
+    "-8,827",
+    "-7,681",
+    "-7,352",
+    "+3,496"
+  ),
+  `Oct. 10, 4 PM CDT` = c(
+    "-10,540",
+    "-8,890",
+    "-7,770",
+    "-6,045",
+    "+13,176"
+  ),
+  `Oct. 14, 4 PM CDT` = c(
+    "-1,675",
+    "-841",
+    "+206",
+    "+609",
+    "+963"
+  ),
+  `Takeaway` = c(
+    "Largest coastal deficit; substantial recovery by October 14.",
+    "Deficit initially deepened before narrowing considerably.",
+    "Deficit initially deepened, followed by a return to higher user count than the baseline.",
+    "Smallest initial coastal deficit; also returned to higher user count than the baseline.",
+    "Initial influx increased before declining toward baseline."
+  )
+)
 
-* **City selections.** Population time series use exact **`r site_box_miles` × `r site_box_miles` mile** square selections centered on each city.
+key_takeaways |>
+  gt::gt() |>
+  gt::tab_spanner(
+    label = "Net Change in Facebook Users",
+    columns = 2:4
+  ) |>
+  gt::cols_width(
+    Location ~ gt::pct(18),
+    `Oct. 10, 12 AM CDT` ~ gt::pct(16),
+    `Oct. 10, 4 PM CDT` ~ gt::pct(15),
+    `Oct. 14, 4 PM CDT` ~ gt::pct(15),
+    Takeaway ~ gt::pct(36)
+  ) |>
+  gt::cols_align(
+    align = "center",
+    columns = 2:4
+  ) |>
+  gt::cols_align(
+    align = "left",
+    columns = c(1, 5)
+  ) |>
+  gt::opt_table_lines(
+    extent = "none"
+  ) |>
+  gt::tab_options(
+    table.width = gt::pct(100),
+    table.font.names = "Times New Roman",
+    table.font.size = gt::px(12),
+    column_labels.font.size = gt::px(12),
+    column_labels.font.weight = "normal",
+    data_row.padding = gt::px(2),
+    column_labels.padding = gt::px(3),
+    column_labels.border.bottom.style = "solid",
+    column_labels.border.bottom.width = gt::px(1),
+    column_labels.border.bottom.color = "black"
+  )
+```
+
+```{=typst}
+]
+```
+
+*Note.* Values represent the net change in Facebook users (crisis − baseline), not the total population or number of evacuees. Negative values indicate fewer users than baseline; positive values indicate more users. All times are CDT. See @fig-seq and @fig-ts for the spatial and full temporal patterns.
+
+
+
+{{< pagebreak >}}
+
+## 1. Hurricane Path
+
+This regional view is shown at **`r context_label`**. The map provides broader context for the storm's observed approach and the official forecast available at that point in the event.
 
 ```{r}
 #| label: tbl-places
-#| tbl-cap: "Cities used in the Hurricane Isaias analysis and population change during the first available window."
+#| tbl-cap: "Cities used in the Hurricane Isaias analysis and Facebook user change during the first available window after landfall."
+
+# U.S. Census Bureau, 2025 population estimates
+census_population <- tibble(
+  place = c(
+    "Gulf Shores",
+    "Pensacola",
+    "Destin",
+    "Panama City Beach",
+    "Tuscaloosa"
+  ),
+  population_2025 = c(
+    17394,
+    53817,
+    14046,
+    20375,
+    114316
+  )
+)
 
 places |>
+  left_join(
+    census_population,
+    by = "place"
+  ) |>
   transmute(
-    Place = place,
+    Place = case_when(
+      place %in% c("Gulf Shores", "Tuscaloosa") ~
+        paste0(place, ", AL"),
+      place %in% c("Pensacola", "Destin", "Panama City Beach") ~
+        paste0(place, ", FL"),
+      TRUE ~ place
+    ),
     Role = role,
-    Latitude = lat,
-    Longitude = lon,
-    `Net change in users` = round(net_users),
-    `Tiles with data` = tiles_with_data
+    `Population (2025 est.)` = population_2025,
+    `Net change in Facebook users` = round(net_users)
   ) |>
   knitr::kable(
-    digits = 4,
-    align = c("l", "l", "l", "l", "r", "r"),
+    digits = 0,
+    align = c("l", "l", "r", "r"),
     format.args = list(
       big.mark = ","
     )
   )
 ```
 
-## Overview
-
-This report describes population change across the Florida Gulf Coast during Hurricane Isaias using Meta's *Facebook Population During Crisis* data from **`r first_label` through `r latest_label`**. Population observations occur every eight hours and are compared with the historical baseline for the corresponding time period.
-
-The detailed maps focus on the western Florida Panhandle and coastal Alabama. They combine the population signal with terrain, major roads, rivers, and NHC storm-track information so population changes can be interpreted alongside the physical and transportation context of the affected region.
-
-## 1. Regional hurricane-path context
-
-This regional view is shown at **`r context_label`**. The map provides broader context for the storm's observed approach and the official forecast available at that point in the event.
-
 ```{r}
 #| label: fig-regional-context
-#| fig-width: 10.5
-#| fig-height: 6.5
+#| fig-width: 7.3
+#| fig-height: 6.2
 #| out-width: "100%"
-#| fig-cap: "Regional Gulf Coast view of Hurricane Isaias. The observed track is shown with circular intensity markers; the official forecast uses a red dashed path and diamond markers."
+#| fig-cap: "Regional Gulf Coast view of Hurricane Isaias. The observed track is shown with circular intensity markers, while the official forecast is represented by a red dashed path and diamond markers. Storm positions, maximum sustained wind speeds, and intensity classifications are derived from the NOAA National Hurricane Center (NHC) Automated Tropical Cyclone Forecasting (ATCF) best-track and official forecast datasets. User counts are differences from a 90-day pre-crisis baseline: red means fewer users, green means more users"
 
-context_fill_limits <- shared_limits(
-  col = "Difference between baseline and crisis",
-  symmetric = TRUE,
-  ds1 = statewide_path_ds,
-  hour1 = statewide_path_hour,
-  ds2 = statewide_path_ds,
-  hour2 = statewide_path_hour,
-  lon_limits_use = context_lon,
-  lat_limits_use = context_lat
-)
+context_fill_limits <- c(-1000, 1000)
 
 figure1_cities <- tribble(
   ~place,              ~role,                                 ~lon,      ~lat,     ~label_dx_m, ~label_dy_m,
@@ -362,109 +488,88 @@ hurricane_panel(
   labs(
     subtitle = "Hurricane Path at Earliest Timepoint After Landfall"
   ) +
-  theme(
-    legend.box = "vertical",
-    legend.spacing.y = grid::unit(0.12, "cm")
-  )
+theme(
+  legend.box = "vertical",
+  legend.spacing.y = grid::unit(0.08, "cm"),
+  legend.key.spacing.y = grid::unit(0.05, "cm"),
+  legend.margin = margin(0, 0, 0, 0),
+  legend.box.margin = margin(0, 0, 0, 0),
+  plot.margin = margin(2, 2, 2, 2)
+)
 ```
 
 ## 2. Population change through the crisis
 
-**Dark red = fewer users than baseline; dark green = more users than baseline; white = little/no net change; grey = privacy-threshold / missing data.**
-
-The three panels below show the beginning, midpoint, and end of the Hurricane Isaias population-data period using the same population-change scale. This allows changes in the spatial pattern to be compared directly across time.
+**Dark red = fewer users than baseline; dark green = more users than baseline; white = little/no net change; grey = privacy-threshold / missing data.** The three panels below show the beginning, time point of interest, and end of the Hurricane Isaias population-data period using the same population-change scale. This allows changes in the spatial pattern to be compared directly across time.
 
 ```{r}
 #| label: fig-seq
-#| fig-width: 10.5
-#| fig-height: 9.5
+#| fig-width: 9
+#| fig-height: 7
 #| out-width: "100%"
-#| fig-cap: "Population difference at the start, midpoint, and end of the Hurricane Isaias event period. Rows show zoomed views of Gulf Shores and Pensacola, Destin and Panama City Beach, and Tuscaloosa. All panels use the same population-change scale."
+#| fig-cap: "Population difference at the start, time point of interest, and end of the Hurricane Isaias data collection period. Rows show zoomed views of  Tuscaloosa, Gulf Shores and Pensacola, and lastly Destin and Panama City Beach. All panels use the same population-change scale."
 
 # --------------------------------------------------------------------------
 # Figure 2 city groups
 # --------------------------------------------------------------------------
 
 fig2_west_cities <- cities |>
-  filter(
-    place %in% c(
-      "Gulf Shores",
-      "Pensacola"
-    )
-  ) |>
+  filter(place %in% c("Gulf Shores", "Pensacola")) |>
   mutate(
     label_dx_m = case_when(
       place == "Gulf Shores" ~ -12000,
-      place == "Pensacola"   ~  12000
+      place == "Pensacola" ~ 20000
     ),
-    label_dy_m = case_when(
-      place == "Gulf Shores" ~ 9000,
-      place == "Pensacola"   ~ 9000
-    )
+    label_dy_m = 9000
   )
 
 fig2_east_cities <- cities |>
-  filter(
-    place %in% c(
-      "Destin",
-      "Panama City Beach"
-    )
-  ) |>
+  filter(place %in% c("Destin", "Panama City Beach")) |>
   mutate(
     label_dx_m = case_when(
-      place == "Destin"            ~ -12000,
-      place == "Panama City Beach" ~  0
+      place == "Destin" ~ -12000,
+      place == "Panama City Beach" ~ -5000
     ),
     label_dy_m = case_when(
-      place == "Destin"            ~  10000,
-      place == "Panama City Beach" ~ -10000
+      place == "Destin" ~ 10000,
+      place == "Panama City Beach" ~ -20000
     )
   )
 
 fig2_tuscaloosa <- cities |>
-  filter(
-    place == "Tuscaloosa"
-  ) |>
+  filter(place == "Tuscaloosa") |>
   mutate(
     label_dx_m = -12000,
     label_dy_m = -10000
   )
 
-
 # --------------------------------------------------------------------------
-# Plotting extents for each row
+# Plotting extents
 # --------------------------------------------------------------------------
 
 fig2_regions <- list(
-
-  # Row 1: Tuscaloosa
   list(
     name = "Tuscaloosa",
     cities = fig2_tuscaloosa,
-    lon = c(-87.90, -87.25),
-    lat = c(32.90, 33.45)
+    lon = c(-87.99, -87.19),
+    lat = c(32.94, 33.40)
   ),
-
-  # Row 2: Gulf Shores + Pensacola
   list(
     name = "Gulf Shores + Pensacola",
     cities = fig2_west_cities,
-    lon = c(-87.95, -86.95),
-    lat = c(30.05, 30.65)
+    lon = c(-88.00, -86.80),
+    lat = c(29.99, 30.68)
   ),
-
-  # Row 3: Destin + Panama City Beach
   list(
     name = "Destin + Panama City Beach",
     cities = fig2_east_cities,
-    lon = c(-86.75, -85.55),
-    lat = c(30.00, 30.62)
+    lon = c(-86.86, -85.56),
+    lat = c(29.94, 30.69)
   )
 )
 
-
 # --------------------------------------------------------------------------
-# Column times
+# Column time points
 # --------------------------------------------------------------------------
 
 fig2_times <- tibble(
@@ -485,22 +590,7 @@ fig2_times <- tibble(
   )
 )
 
-
-# --------------------------------------------------------------------------
-# Common population scale across all nine maps
-# --------------------------------------------------------------------------
-
-figure2_fill_limits <- shared_limits(
-  col = "Difference between baseline and crisis",
-  symmetric = TRUE,
-  ds1 = event_start_ds,
-  hour1 = event_start_hour,
-  ds2 = event_end_ds,
-  hour2 = event_end_hour,
-  lon_limits_use = c(-87.95, -85.55),
-  lat_limits_use = c(30.00, 33.45)
-)
-
+figure2_fill_limits <- c(-1000, 1000)
 
 # --------------------------------------------------------------------------
 # Build the 3 x 3 grid
@@ -516,20 +606,25 @@ for (row_i in seq_along(fig2_regions)) {
 
     time_i <- fig2_times[col_i, ]
 
-    # Start with the normal hurricane configuration.
-    # Assign directly instead of using modifyList() because each row
-    # contains a different number of cities.
     panel_config <- hurricane_config
 
+    # City labels
     panel_config$cities <- region$cities
     panel_config$show_cities <- TRUE
     panel_config$show_city_points <- FALSE
-    panel_config$city_label_size <- 2.4
+    panel_config$city_label_size <- 2.6
 
+    # Hurricane paths ONLY:
+    # No storm intensity circles or wind-speed diamonds
+    panel_config$show_storm_markers <- FALSE
     panel_config$show_storm_legend <- FALSE
-    panel_config$show_path_legend <- FALSE
-    panel_config$show_context_legend <- FALSE
 
+    # Keep observed and forecast pathways
+    panel_config$show_path_legend <- TRUE
+    panel_config$path_legend_position <- "bottom"
+    panel_config$path_legend_order <- 3
+
+    panel_config$show_context_legend <- FALSE
     panel_config$show_state_borders <- FALSE
     panel_config$terrain_zoom <- 10
 
@@ -544,42 +639,28 @@ for (row_i in seq_along(fig2_regions)) {
       fill_limits = figure2_fill_limits
     )
 
-    # Only show time titles across the first row.
-    if (row_i == 1) {
-      p <- p +
-        labs(
-          title = time_i$label,
-          subtitle = NULL
-        )
-    } else {
-      p <- p +
-        labs(
-          title = NULL,
-          subtitle = NULL
-        )
-    }
-
+    # Time titles only across the first row
     p <- p +
+      labs(
+        title = if (row_i == 1) time_i$label else NULL,
+        subtitle = NULL
+      ) +
       theme(
+        aspect.ratio = 0.72,
         plot.title = element_text(
-          size = 9,
-          face = "bold"
+          face = "plain",
+          hjust = 0
         ),
-        plot.margin = margin(
-          2,
-          2,
-          2,
-          2
-        )
+        plot.margin = margin(2, 2, 2, 2),
+        panel.spacing = unit(0, "cm")
       )
 
     panels[[length(panels) + 1]] <- p
   }
 }
 
-
 # --------------------------------------------------------------------------
-# Assemble the 3 x 3 figure
+# Assemble figure and collect legends
 # --------------------------------------------------------------------------
 
 (
@@ -594,16 +675,26 @@ for (row_i in seq_along(fig2_regions)) {
 ) &
   ggplot2::guides(
     colour = "none",
-    linetype = "none",
     shape = "none",
     size = "none"
   ) &
   legend_theme
 ```
 
-### Population change in selected city regions
+### Interpretation
 
-The city-level time series summarize the net change in Facebook users relative to baseline within exact **`r site_box_miles` × `r site_box_miles` mile** areas centered on Pensacola, Destin, Panama City Beach, and Mobile.
+* **User movement.** Dark red tiles along the coast (Gulf Shores, Pensacola, Destin, Panama City Beach) show fewer Facebook users than baseline on October 10th, which suggest users leaving the coast or losing service. 
+* The area around **Destin**, closest city to Hurricane Isaias landfall, shows the largest decline in users relative to baseline (−11,966 users at 12 am on October 10) and was the last of the coastal cities to move back toward baseline. It was still about 1,675 users below baseline at 4pm on October 14 (@fig-seq, @fig-ts).
+* Dark green tiles around **Tuscaloosa** indicate an influx of users relative to baseline. The influx grew from +3,496 users at 12am on October 10 to a peak of +13,176 users at 4pm, October 10 (@fig-seq, @fig-ts). It then fell to +963 users by 4pm October 14. 
+* **Return toward normal.** After the hurricane moves away, both the red and green signals fade toward baseline. 
+* By 4 PM on October 14, population deficits in the coastal cities had narrowed from their October 10 lows, while Tuscaloosa's initial influx had diminished. These trends are reflected in the lighter red coastal tiles and lighter green tiles surrounding Tuscaloosa, indicating a gradual return toward baseline population levels (@fig-seq, @fig-ts). 
+* Both Pensacola and Gulf Shores are the only cities that fully returned to baseline by 4pm on October 14.
+
+{{< pagebreak >}}
+
+## 3. Population change in selected city regions
+
+The city-level time series summarize the net change in Facebook users relative to baseline within exact **`r site_box_miles` × `r site_box_miles` mile** areas centered on Gulf Shores, AL, Pensacola, FL, Destin, FL, and Panama City Beach, FL and Tuscaloosa, AL. Each 9 × 9 mile area corresponds approximately to a 6 × 6 grid of 1.5-mile Bing tiles, representing roughly 36 tiles per city.
 
 ```{r}
 #| label: fig-ts
@@ -612,14 +703,63 @@ The city-level time series summarize the net change in Facebook users relative t
 #| out-width: "100%"
 #| fig-cap: "Net change in users (crisis − baseline) within exact city-centered square selections, shown in 8-hour intervals."
 
+library(ggrepel)
+
+# ---- Choose the y-axis -------------------------------------------------
+
+use_percent <- FALSE   # TRUE = % change; FALSE = net users
+
 city_ts_plot <- city_ts |>
   mutate(
+    baseline_users = crisis_users - net_users,
+    y_val = if (use_percent) {
+      if_else(
+        baseline_users > 0,
+        100 * net_users / baseline_users,
+        NA_real_
+      )
+    } else {
+      net_users
+    },
     change_direction = if_else(
-      net_users < 0,
+      y_val < 0,
       "Below baseline",
       "Above baseline"
+    ),
+    city_state = case_when(
+      place %in% c("Gulf Shores", "Tuscaloosa") ~ paste0(place, ", AL"),
+      place %in% c("Pensacola", "Destin", "Panama City Beach") ~ paste0(place, ", FL"),
+      TRUE ~ place
     )
   )
+
+y_lab <- if (use_percent) {
+  "% change vs. baseline"
+} else {
+  "Net users vs. baseline"
+}
+
+y_scale <- if (use_percent) {
+  scale_y_continuous(
+    labels = scales::label_percent(scale = 1)
+  )
+} else {
+  scale_y_continuous(
+    labels = scales::label_comma()
+  )
+}
+
+# ---- City symbols ------------------------------------------------------
+
+city_shapes <- c(
+  "Gulf Shores" = 16,
+  "Pensacola" = 17,
+  "Destin" = 15,
+  "Panama City Beach" = 23,
+  "Tuscaloosa" = 8
+)
+
+# ---- Labels at the final time point -----------------------------------
 
 city_labels <- city_ts_plot |>
   group_by(place) |>
@@ -630,11 +770,13 @@ city_labels <- city_ts_plot |>
   ) |>
   ungroup()
 
-ggplot(
+# ---- Time series plot --------------------------------------------------
+
+p_ts <- ggplot(
   city_ts_plot,
   aes(
     x = window_time,
-    y = net_users,
+    y = y_val,
     group = place
   )
 ) +
@@ -644,28 +786,42 @@ ggplot(
     linewidth = 0.4
   ) +
   geom_line(
-    aes(
-      colour = change_direction
-    ),
+    aes(colour = change_direction),
     linewidth = 0.8
   ) +
   geom_point(
     aes(
-      colour = change_direction
+      colour = change_direction,
+      shape = place
     ),
-    size = 1.5
+    size = 2
   ) +
-  geom_text(
+
+  # Automatically reposition city labels to reduce overlap
+  ggrepel::geom_text_repel(
     data = city_labels,
     aes(
-      label = place,
+      label = city_state,
       colour = change_direction
     ),
-    hjust = -0.1,
+    direction = "y",
+    nudge_x = 4 * 3000,
+    hjust = 0,
     size = 3,
     fontface = "bold",
+    box.padding = 0.35,
+    point.padding = 0.2,
+    force = 5,
+    max.overlaps = Inf,
+    min.segment.length = 0,
+    segment.colour = "grey40",
+    segment.size = 0.3,
+    seed = 42,
     show.legend = FALSE
   ) +
+
+  # ---- Colour scale ----------------------------------------------------
+
   scale_colour_manual(
     values = c(
       "Below baseline" = "darkred",
@@ -673,89 +829,155 @@ ggplot(
     ),
     name = NULL
   ) +
+
+  # ---- City shape scale ------------------------------------------------
+
+  scale_shape_manual(
+    name = "City",
+    values = city_shapes,
+    breaks = c(
+      "Tuscaloosa",
+      "Pensacola",
+      "Gulf Shores",
+      "Panama City Beach",
+      "Destin"
+    ),
+    labels = c(
+      "Tuscaloosa, AL",
+      "Pensacola, FL",
+      "Gulf Shores, AL",
+      "Panama City Beach, FL",
+      "Destin, FL"
+    )
+  ) +
+
+  # ---- Axes -----------------------------------------------------------
+
   scale_x_datetime(
     breaks = sort(unique(city_ts$window_time)),
     date_labels = "%b %d\n%I %p",
     expand = expansion(
-      mult = c(0.02, 0.18)
+      mult = c(0.02, 0.30)
     )
   ) +
-  scale_y_continuous(
-    labels = scales::label_comma()
-  ) +
+  y_scale +
   labs(
     x = "Date and Time (CDT)",
-    y = "Net users vs. baseline"
+    y = y_lab
   ) +
   coord_cartesian(
     clip = "off"
   ) +
+
+  # ---- Legends --------------------------------------------------------
+
+  guides(
+    shape = guide_legend(
+      nrow = 1,
+      byrow = TRUE,
+      order = 1,
+      override.aes = list(
+        colour = "grey20"
+      )
+    ),
+    colour = guide_legend(
+      nrow = 1,
+      order = 2
+    )
+  ) +
+
+  # ---- Theme ----------------------------------------------------------
+
   theme_minimal(
     base_size = 8
   ) +
   theme(
     panel.grid.minor = element_blank(),
+
     axis.text.x = element_text(
       angle = 45,
       hjust = 1
     ),
+
     legend.position = "bottom",
+    legend.box = "vertical",
+    legend.direction = "horizontal",
+
+    legend.text = element_text(size = 7),
+    legend.title = element_text(size = 8),
+    legend.key.size = grid::unit(0.35, "cm"),
+    legend.spacing.x = grid::unit(0.12, "cm"),
+
     plot.margin = margin(
-      5.5,
-      65,
-      5.5,
-      5.5
+      5.5, 65, 5.5, 5.5
     )
   )
+
+p_ts
 ```
 
-## Interpretation
 
-Population decreases relative to baseline may reflect evacuation, displacement, loss of electrical or cellular service, or other disruptions that reduce observed Facebook activity within an affected area. Population increases may reflect movement into nearby communities, temporary relocation, sheltering, or normal variation in the underlying Facebook-user population.
+### Interpretation
 
-The city time series should therefore be interpreted as indicators of changes in the spatial distribution of Facebook users rather than direct counts of evacuees or residents. Comparing the maps and city-level trends with the observed storm track, road network, and regional geography can help identify where population changes were concentrated during the event.
+* **Decreases in user population relative to baseline (coastal cities).**
+* Gulf Shores, Pensacola, Destin, and Panama City Beach stayed below the 90-day user baseline but as of `r latest_label` both Pensacola and Gulf Shores are above baseline levels (Figure 3). Possible  explanations include:
+  * Evacuation or exodus away from the coast
+  * Loss of electrical or cellular service, which reduces observed Facebook activity
+  * Other disruptions that reduce activity within the affected area
+
+* **Increases in user population relative to baseline (inland).**
+* Tuscaloosa was above user baseline in every window, and its net influx grew from +3,496 users at 12am to +13,176 users at 4pm on Oct. 10th (Table 1, Figure 3). Possible explanations include:
+  * Influx into nearby inland cities
+  * Temporary relocation or sheltering
+  * College football fans commuting to watch Alabama verse Georgia that took place Oct. 10 at 6:30 CDT
+
+* **Magnitude of change.** Destin had the deepest deficit (−12,977 users at 8am on Oct. 10th), while Pensacola's deficit steadily narrowed. The coastal deficits eased with the four cities approaching the baseline by 4pm on Oct. 12th (Figure 3).
+
+* **What the time series measure.** The city time series indicate changes in the *spatial distribution of Facebook users*, not direct counts of evacuees or residents.
 
 {{< pagebreak >}}
 
 ## Appendix
 
+This report summarizes Facebook user population data by Meta for **`r first_label` through `r latest_label`** to help understand where user population change is concentrated during Hurricane Isaias and **whether** it is consistent with Hurricane impact. It is a decision-support supplement, not a headcount: every figure reflects Facebook users with Location Services on, not the whole population (see Data caveats).
+
 ### Data description
 
-The analysis uses Meta's **Facebook Population During Crisis** data. The signal represents Facebook app users with Location Services enabled, not the full resident population. For this event, population observations are available from **`r first_label` through `r latest_label`** in **8-hour increments**.
+We use Meta's **Facebook Population During Crisis** data, which uses location activity from Facebook users (with **Location Services on**) to estimate how user population shifts during a crisis. The data represent **Facebook app users**, not everyone in the area, hence "users." The dataset compares user counts near the disaster hit area with pre-crisis behavior. There are two granularities: fixed **8-hour windows** (starting 12am / 8am / 4pm Central Time) and **Bing tiles** (level 14, about 2.4 km or 1.5 mi squares). For privacy, a tile is shown as NA / grey when either the crisis or the baseline count is under 10 users. Grey means "one side was below threshold" (not "no change" or "fewer than 10 people total"). One signal was used: the **difference from a pre-crisis baseline** for the same time of day and day of week (a 90-day baseline).
 
-Population measurements are provided in Bing level-14 tiles. Crisis counts are compared with the historical baseline for the corresponding time period.
+For this event, population observations run from **`r first_label` through `r latest_label`** in 8-hour increments. For city-level user population change over time @fig-ts, each city is centered within an exact **`r site_box_miles` × `r site_box_miles` mile square**.
 
-For city-level summaries, each city is centered within an exact **`r site_box_miles` × `r site_box_miles` mile square** constructed in a local metric projection before population tiles are spatially selected.
+### Map, terrain, storm data, and population data
 
-### Map, terrain, and storm data
+Terrain is downloaded through `elevatr` [@elevatr] from AWS Terrain Tiles [@terrain_tiles], projected with `terra` [@terra], and cached locally. Major roads and rivers come from OpenStreetMap [@osm].
 
-Terrain is downloaded through `elevatr`, projected with `terra`, and cached locally. Major roads and rivers are queried from OpenStreetMap and are included to provide transportation and geographic context.
+NHC ATCF data [@nhc_atcf] provide the observed best track and the official forecast track of the hurricane Isaias.
 
-NHC ATCF data provide the observed best track and official forecast track. For retrospective reporting, the hurricane helper checks both current ATCF aid files and the yearly ATCF archive. The forecast selected for a map is the latest official (`OFCL`) forecast initialized at or before that map's time.
-
-The map distinguishes storm history from prediction:
-
-* **Solid black:** realized / observed best track through the map time.
-* **Red dashed:** official predicted center track available at or before the map time.
-* **Blue translucent area:** forecast uncertainty cone when a specific archived cone KMZ is supplied.
-* **Black road lines:** major road network.
-* **Blue lines:** major rivers.
-* **Dark red → white → dark green cells:** population change relative to baseline.
+The U.S. Census Bureau's 2025 population estimates were used to provide resident populations for the five selected cities, offering demographic context for interpreting changes in Facebook-user populations during Hurricane Isaias [@census_cities_towns].
 
 ::: {.callout-warning title="Data caveats" appearance="simple"}
-- **Sample bias.** The data cover Facebook users with Location Services enabled, not all residents or visitors.
-- **Data intervals.** Population data are aggregated into 8-hour windows.
-- **Privacy controls.** Suppressed or missing tiles should not be interpreted as zero population change.
-- **Baseline comparison.** Crisis differences are relative to a historical baseline, not direct evacuation counts.
-- **Connectivity.** Apparent population decreases can reflect evacuation, power loss, cell-service disruption, or a combination.
-- **Forecast vs. observed track.** The forecast path represents what was predicted at that point in the event; the best track is the retrospective observed/analysed storm path.
-- **Users ≠ people.** Facebook-user counts are not direct counts of residents, evacuees, vehicles, or shelter demand.
+- **Sample bias.** The data cover only Facebook users with Location Services turned on.
+- **Data intervals.** Population data are aggregated into 8-hour windows, with up to about 8 hours of delay.
+- **Tile size.** Tiles are about 2 km (1.3 mi), neighborhood-scale, not address-level.
+- **Privacy controls.** A tile is NA / grey when the crisis or baseline count is under 10. Suppressed or missing tiles should not be interpreted as zero population change.
+- **Baselines.** Population data use a 90-day baseline before the crisis. Differences are relative to that baseline, not direct evacuation counts.
+- **Evacuation vs. connectivity.** A tile emptying could mean people left or that power or cell service dropped.
+- **Who is under-counted.** The signal skews toward mobile, connected, vehicle-owning residents and may under-capture people with mobility limits, no vehicle, or no transit option.
+- **Forecast vs. observed track.** The forecast path is what was predicted at that point in the event; the best track is the retrospective observed path.
+- **Users ≠ people ≠ vehicles.** Facebook-user counts are not direct counts of residents, evacuees, vehicles, or shelter demand.
 :::
 
-### Sources
 
-* Meta: Facebook Population During Crisis.
-* NOAA National Hurricane Center: ATCF best-track and official forecast products.
-* Map data © OpenStreetMap contributors.
-* Terrain from AWS Terrain Tiles through the `elevatr` package.
-* Basemap tiles through `maptiles`.
+```{r}
+#| label: fig-nhc
+#| fig-cap: "National Hurricane Center 5-day forecast cone for Hurricane Isaias (AL092026), Advisory 8, issued 10 AM CDT on Thursday, October 8, 2026. Source: National Hurricane Center (2026)."
+#| out-width: "85%"
+
+knitr::include_graphics("Isaias.png")
+```
+
+The graphic above shows the NHC forecast at the time of Advisory 8 (@nhc_isaias). The forecast cone brought the storm onto the northern Gulf Coast as a hurricane on Friday, October 9, then inland as a tropical storm and depression through October 10–12, with hurricane and tropical storm warnings posted along the coast.
+
+
+::: {#refs}
+:::

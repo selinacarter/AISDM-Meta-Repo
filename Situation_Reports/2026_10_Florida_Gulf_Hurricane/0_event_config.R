@@ -24,12 +24,12 @@ event_start_ds <- "2026-10-10"
 event_start_hour <- "0000"
 
 event_mid_ds <- "2026-10-10"
-event_mid_hour <- "0800"
+event_mid_hour <- "1600"
 
 statewide_path_ds <- "2026-10-10"
 statewide_path_hour <- "0800"
 
-event_end_ds <- "2026-10-10"
+event_end_ds <- "2026-10-14"
 event_end_hour <- "1600"
 
 # Map extents

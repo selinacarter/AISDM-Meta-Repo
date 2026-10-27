@@ -293,9 +293,8 @@ format_time <- function(ds, hour, tzone, source_tz = data_tz) {
   
   formatted <- format(
     datetime_local,
-    "%B %d, %Y %I%p"
+    "%B %d, %Y %I%p %Z"
   )
-  
   
   formatted <- gsub(" 0", " ", formatted)
   formatted <- gsub("AM", "am", formatted)
@@ -303,7 +302,6 @@ format_time <- function(ds, hour, tzone, source_tz = data_tz) {
   
   formatted
 }
-
 # Earliest & latest time windows actually present in the data, plus pretty labels.
 # Lives here (not in the .qmd) so the notebook and the report share one source.
 compute_windows <- function(fb_data_bing, tzone) {

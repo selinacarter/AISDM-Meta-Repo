@@ -402,12 +402,15 @@ population_plot <- function(
       low = "darkred",
       mid = "white",
       high = "darkgreen",
-      limits = lims,
+      limits = c(-1000, 1000),
+      breaks = c(-1000, -500, 0, 500, 1000),
+      labels = scales::label_comma(),
       midpoint = 0,
+      oob = scales::squish,
       name = "Users (crisis - baseline)",
       guide = ggplot2::guide_colorbar(
         direction = "horizontal",
-        order = 1,
+        order = 2,
         title.position = "top",
         position = "bottom"
       )
